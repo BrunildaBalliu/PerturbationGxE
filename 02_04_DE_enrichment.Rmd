@@ -1,0 +1,795 @@
+---
+title: "Enrichment analysis of DE genes"
+author: "Brunilda Balliu"
+date: "6/5/2020"
+output: html_document
+---
+
+
+# Enrichment analyses  
+
+<!-- Libraries  and functions -->
+```{r, eval=TRUE, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+x=c("cowplot","clusterProfiler","data.table", "dplyr", "ggplot2",  "ggrepel", "magrittr" , "msigdbr", "reshape2", "readxl", "corrplot", "stringr", 'WriteXLS')
+# "Biobase", 'WebGestaltR','knitr', "kableExtra", "gridGraphics", "variancePartition", "qvalue", "ggdendro", "ggrepel", "gridExtra", "ggcorrplot", "RColorBrewer", "sets", "org.Hs.eg.db"
+garbage=lapply(x, require, character.only = TRUE)
+
+source('../../Functions.R')
+source('00_MoMeIR_Functions.R')
+
+DE_output_dir='../results/DE/'
+
+perturb_order=c("GLUC", "INSU", "IGF1", "SB20", "SP60", "U012", "WORT", "IL-6", "TGFB1", "TNFa", "ADIP", "LEPT", "ATOR", "ROSI", "METF", "DECA", "LAUR", "RETA", "DEXA", "IBMX", "ISOP")
+
+cell_order=c("HMCL-7304", "SGBS", "HEPG2")
+cell_labels=c("Muscle", "Fat", "Liver")
+cell_col=c("#E69F00","#999999","#56B4E9")
+
+results_all_pairs=fread(file = '../results/DE/DE_sum_stat_all_treatments_cells.tsv', sep = '\t', header  = T)
+results_all_pairs$cell[results_all_pairs$cell == "SKMC"] = "HMCL-7304"
+results_all_pairs$cell = factor(x = results_all_pairs$cell, levels = cell_order, labels = cell_labels)
+results_all_pairs$Treatment = factor(results_all_pairs$Treatment, levels = perturb_order)
+
+suppress_plot <- function(...) {
+    tdir <- tempdir()
+    png(file.path(tdir, "out.png"))
+    out <- eval(substitute(...())[[1]])
+    dev.off()
+    out
+}
+
+```
+
+#### Enrichment analyses of DE genes at 5% FDR
+I used the R package _clusterProfiler_ to perform over-representation analysis (ORA) of DE genes in each treatment and cell for biological pathways in ConsensusPathDB (http://cpdb.molgen.mpg.de/). ConsensusPathDB integrates interaction networks in Homo sapiens including binary and complex protein-protein, genetic, metabolic, signaling, gene regulatory and drug-target interactions, as well as biochemical pathways. Data originate from currently 32 public resources for interactions and interactions that we have curated from the literature. The interaction data are integrated in a complementary manner (avoiding redundancies), resulting in a seamless interaction network containing different types of interactions.
+
+<!-- Process consensusPathDB (http://cpdb.molgen.mpg.de/) to fit clusterProfiler format -->
+```{r, eval=TRUE, warning=F, message=F}
+if(0){
+  consensusDB=fread(input = '../results/EnrichmentAnalyses/consensusPathDB_pathways_genes.tab', sep = '\t')
+  consensusDB$pathway_source=paste(consensusDB$pathway, consensusDB$source, sep = ":")
+  consensusDB_long=NULL
+  for(i in 1:nrow(consensusDB)){
+    consensusDB_long=rbind(consensusDB_long,
+                           cbind(pathway=consensusDB$pathway[i], 
+                                 source=consensusDB$source[i], 
+                                 pathway_source=consensusDB$pathway_source[i], 
+                                 genes=unlist(strsplit(x = consensusDB$hgnc_symbol_ids[i], split = ',', fixed = T))))
+  }
+  write.table(x = consensusDB_long,file = '../results/EnrichmentAnalyses/consensusPathDB_pathways_genes_long.tab', sep = '\t', quote = T, row.names = F, col.names = T)
+}  
+consensusDB_long=fread(input = '../results/EnrichmentAnalyses/consensusPathDB_pathways_genes_long.tab', sep = '\t', header = T, check.names = F, stringsAsFactors = F)
+
+```
+
+<!-- Run enrichment analyses for pathways in ConsensusPathDB   -->
+```{r, eval=FALSE, warning=F, message=F}
+# Run gene-set enrichment analyses
+for( j in 1:length(unique(results_all_pairs$cell))){
+  cell_j=as.character(unique(results_all_pairs$cell)[j])
+  for(i in 1:length(unique(results_all_pairs$Treatment))){
+    treatment_i=as.character(unique(results_all_pairs$Treatment)[i])
+    
+    # Extract summary statistics for cell j and treatment i
+    d=results_all_pairs %>% filter(Treatment==treatment_i & cell==cell_j)
+    
+    # Over-representation analysis
+    ora <- data.frame(enricher(gene = (d %>% filter(sig5FDR_hFDR3))$geneID, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], pvalueCutoff = 1))
+    if(nrow(ora)!=0) WriteXLS(x=ora[,-1], ExcelFileName = paste0('../results/EnrichmentAnalyses/Enrichment_DE_genes/ORA_consensusDB_',cell_j,"_",treatment_i,'.xls'), SheetNames = paste0(cell_j,"_",treatment_i), col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+    
+    # Gene-set enrichment analysis. 
+    # Compute score for GSEA -log10(pvalue) * sign(beta)
+    geneList <- d[,c("geneID","log2FoldChange","pvalue")]
+    geneList$pvalue[geneList$pvalue==0] = sort(geneList$pvalue[geneList$pvalue!=0])[1]
+    geneList$score=-log10(x = geneList$pvalue) * sign(geneList$log2FoldChange)
+    geneList=geneList[order(geneList$score, decreasing = T),]
+    
+      gsea_res <- GSEA(geneList = structure(.Data = geneList[,"score"], .Names = geneList[,"geneID"]), TERM2GENE = consensusDB_long[,c("pathway_source", "genes")], pvalueCutoff = 1, nPerm = 1e05)[,-1]
+      if(nrow(gsea_res)!=0) WriteXLS(x  = gsea_res, ExcelFileName = paste0('../results/EnrichmentAnalyses/Enrichment_DE_genes/GSEA_consensusDB_',cell_j,"_",treatment_i,'.xls'), SheetNames = paste0(cell_j,"_",treatment_i), row.names = F, col.names = T)
+      print(c(cell_j,treatment_i))
+    }}
+```
+
+<!-- Summarize GSEA results  -->
+```{r, eval=FALSE, fig.height = 10, fig.width = 15, fig.align = "center"}
+  GSEA_consensusPathDB=list.files(path = '../results/EnrichmentAnalyses/Enrichment_DE_genes', pattern = 'GSEA_consensusDB', full.names = T)
+  gsea_res_consensusPathDB=NULL
+  for(i in 1:length(GSEA_consensusPathDB)){
+    gsea_res_i=read_xls(path = GSEA_consensusPathDB[i], col_names = T)
+    cell_treat_i=strsplit(GSEA_consensusPathDB[i], split = "[_ .]+")[[1]][6:7]
+    if(nrow(gsea_res_i)!=0 ) {
+      gsea_res_i=gsea_res_i %>% arrange(pvalue)
+      gsea_res_consensusPathDB=rbind(gsea_res_consensusPathDB, data.frame(cell=cell_treat_i[1], Treatment=cell_treat_i[2], gsea_res_i))}
+  }
+  
+  gsea_res_consensusPathDB$Description[str_count(string=gsea_res_consensusPathDB$Description, pattern = ":")>1] = sub(pattern = ":", replacement = ",", x = gsea_res_consensusPathDB$Description[str_count(string=gsea_res_consensusPathDB$Description, pattern = ":")>1])
+  
+  gsea_res_consensusPathDB$Description[str_count(string=gsea_res_consensusPathDB$Description, pattern = ":")>1] = sub(pattern = ":", replacement = ",", x = gsea_res_consensusPathDB$Description[str_count(string=gsea_res_consensusPathDB$Description, pattern = ":")>1])
+  
+  # gsea_res_consensusPathDB %<>% group_by(cell,Treatment) %>% mutate(BHpvalue = p.adjust(p=pvalue,method = "BH")) %>% ungroup()
+  # gsea_res_consensusPathDB %<>% mutate(BHpvalue_all = p.adjust(p=pvalue,method = "BH"))
+  
+      data_bases=unique(matrix(unlist(strsplit(x = gsea_res_consensusPathDB$Description, split = ":")), ncol = 2, byrow = T)[,2])
+
+  
+  ##### Plot enriched pathways in each data base
+  if(1){
+    pF=0.01
+    
+    h=c(80,10,30,20,10,30,7,6,4,10,25,7)
+    for( i in 1:length(data_bases)){
+      
+      tmp_data=gsea_res_consensusPathDB %>% filter(qvalues<=pF) %>%
+        filter(grepl(pattern = data_bases[i], x = Description)) %>%
+        mutate(Description=gsub(pattern = paste(paste0(":", data_bases),collapse = "|") , replacement = "", x = Description)) %>%
+        mutate(Description=gsub(pattern = " - Homo sapiens \\(human\\)", replacement = "", x = Description)) %>%
+        mutate(Treatment=factor(x = Treatment, levels = perturb_order))
+      
+      p=ggplot(data = tmp_data, aes(Treatment, Description)) + 
+        geom_point(aes(col=NES,size = -log10(qvalues))) + 
+        theme_bw() + 
+        theme(legend.position = "top", 
+              axis.text.x = element_text(angle = 90, size=12,vjust = .5, hjust = 1, color="black"),  
+              axis.text.y = element_text(size=12, color="black"), 
+              axis.title = element_blank(), 
+              strip.text = element_text(size=20)) + 
+        facet_wrap(~cell) + 
+        scale_color_gradient2(low="blue", mid = "white", high="red", midpoint = 0, 
+                              limits=c(-max(abs(tmp_data$NES)),max(abs(tmp_data$NES))))  + 
+        guides(size=guide_legend(title = "-log10(Enrichment Qvalue)"), 
+               col= guide_colorbar(title = "Pathway direction")) + 
+        scale_x_discrete(drop=FALSE)
+      
+      ggsave(filename = paste0('../IR-GxE-4Sharing/manuscript/TableS04_DE_Enrichment_Not_to_be_included_in_manuscript/enrichmentDE_',data_bases[i],'_GSEA.pdf'), plot = p, width = 20, height = h[i], limitsize = F)
+    }}
+  
+  ##### Plot shared pathways
+  if(1){
+    np=10
+    nc=2
+    pF=0.05
+    
+    shared_pathways=unique((gsea_res_consensusPathDB %>% group_by(Description,cell) %>% summarise(nP=sum(qvalues<=pF)) %>% filter(nP>=np) %>% group_by(Description) %>% summarise(nC=n()) %>% filter(nC>=nc))$Description) 
+    
+    GSEA_shared=gsea_res_consensusPathDB %>% 
+      filter(qvalues<=pF & Description %in% shared_pathways)  %>%        
+      mutate(Description=gsub(pattern = " - Homo sapiens \\(human\\)", replacement = "", x = Description)) %>%
+      mutate(Treatment=factor(x = Treatment, levels = perturb_order))
+    
+    p=ggplot(data = GSEA_shared, aes(Treatment, str_wrap(Description,50))) + 
+      geom_point(aes(col=NES,size = -log10(qvalues))) + 
+      theme_bw() + 
+      theme(legend.position = "top", axis.text.x = element_text(angle = 90, size=12,vjust = .5, hjust = 1, color="black"),  axis.text.y = element_text(size=12, color="black"), axis.title = element_blank(), strip.text = element_text(size=20)) + 
+      facet_wrap(~cell) + scale_color_gradient2(low="blue", mid = "white", high="red", midpoint = 0, limits=c(-max(abs(GSEA_shared$NES)),max(abs(GSEA_shared$NES))))  + 
+      guides(size=guide_legend(title = "-log10(Enrichment Qvalue)"), col= guide_colorbar(title = "Pathway direction")) + scale_x_discrete(drop=FALSE)
+    ggsave(filename = paste0('../IR-GxE-4Sharing/manuscript/TableS04_DE_Enrichment_Not_to_be_included_in_manuscript/SharedPathways_GSEA_AtLeast10Perturb2Cells_FDR5prc.pdf'), plot = p, width = 15, height = 5, limitsize = F)
+  }
+  
+  ### Plot insulin resistance/signaling pathways
+  if(1){
+    pF=.1
+    InsulinGSEA=gsea_res_consensusPathDB %>% 
+      filter(qvalues<=pF) %>% 
+      filter(grepl(pattern = "Insulin", x = Description)) %>%  
+      mutate(Description=gsub(pattern = " - Homo sapiens \\(human\\)", replacement = "", x = Description)) %>%
+      mutate(Treatment=factor(x = Treatment, levels = perturb_order))
+    
+    p=ggplot(data = InsulinGSEA, aes(x = Treatment, y = str_wrap(Description,50))) + 
+      geom_point(aes(col=NES,size = -log10(pvalue))) + 
+      theme_bw() + 
+      theme(legend.position = "top", 
+            axis.text.x = element_text(angle = 90, size=12,vjust = .5, hjust = 1, color="black"),  
+            axis.text.y = element_text(size=12, color="black"), 
+            axis.title = element_blank(), strip.text = element_text(size=20)) + 
+      facet_wrap(~cell) + 
+      scale_color_gradient2(low="blue", mid = "white", high="red", midpoint = 0, 
+                            limits=c(-max(abs(InsulinGSEA$NES)),max(abs(InsulinGSEA$NES))))  +
+      guides(size=guide_legend(title = "-log10(Enrichment P-value)"), 
+             col= guide_colorbar(title = "Pathway direction")) + 
+      scale_x_discrete(drop=FALSE)
+    ggsave(filename = paste0('../IR-GxE-4Sharing/manuscript/TableS04_DE_Enrichment_Not_to_be_included_in_manuscript/InsulinPathways_GSEA.pdf'), plot = p, width = 15, height = 7, limitsize = F)
+  }
+  
+```
+
+<!-- Summarize ORA results -->
+```{r, eval=TRUE}
+# Merge all ORA results
+if(0){
+ORA_consensusPathDB=list.files(path = '../results/EnrichmentAnalyses/Enrichment_DE_genes', pattern = 'ORA_consensusDB', full.names = T)
+ORA_res_consensusPathDB=NULL
+for(i in 1:length(ORA_consensusPathDB)){
+  ORA_res_i=read_xls(path = ORA_consensusPathDB[i], col_names = T)
+  cell_treat_i=strsplit(ORA_consensusPathDB[i], split = "[_ .]+")[[1]][6:7]
+  if(nrow(ORA_res_i)!=0 ) ORA_res_consensusPathDB=rbind(ORA_res_consensusPathDB,data.frame(cell=cell_treat_i[1], Treatment=cell_treat_i[2], ORA_res_i))
+}
+
+ORA_res_consensusPathDB$Description[str_count(string=ORA_res_consensusPathDB$Description, pattern = ":")>1] = sub(pattern = ":", replacement = ",", x = ORA_res_consensusPathDB$Description[str_count(string=ORA_res_consensusPathDB$Description, pattern = ":")>1])
+ORA_res_consensusPathDB$Description[str_count(string=ORA_res_consensusPathDB$Description, pattern = ":")>1] = sub(pattern = ":", replacement = ",", x = ORA_res_consensusPathDB$Description[str_count(string=ORA_res_consensusPathDB$Description, pattern = ":")>1])
+
+# ORA_res_consensusPathDB %<>% group_by(cell,Treatment) %>% mutate(BHpvalue = p.adjust(p=pvalue,method = "BH")) %>% ungroup()
+# ORA_res_consensusPathDB %<>% mutate(BHpvalue_all = p.adjust(p=pvalue,method = "BH"))
+WriteXLS(x = ORA_res_consensusPathDB,ExcelFileName = '../results/EnrichmentAnalyses/Enrichment_DE_genes/ORA_all_res.xls',row.names = F,col.names = T)
+}
+ORA_res_consensusPathDB = read_xls(path = '../results/EnrichmentAnalyses/Enrichment_DE_genes/ORA_all_res.xls')
+```
+
+<!-- Plot ORA results in each data base -->
+```{r, eval=FALSE, fig.height = 10, fig.width = 15, fig.align = "center"}
+  pF=0.05
+  data_bases=unique(matrix(unlist(strsplit(x = ORA_res_consensusPathDB$Description, split = ":")), ncol = 2, byrow = T)[,2])
+  h=c(70,50,30,15,10,30,5,10,4,5,20,20)
+  for( i in 1:length(data_bases)){
+    tmp_data=ORA_res_consensusPathDB %>% filter(qvalue<=pF) %>%
+      filter(grepl(pattern = data_bases[i], x = Description)) %>%
+      mutate(Description=gsub(pattern = paste(paste0(":", data_bases),collapse = "|") , replacement = "", x = Description)) %>%
+      mutate(Description=gsub(pattern = "- Homo sapiens \\(human\\)", replacement = "", x = Description)) %>%
+      # filter(nchar(Description)<=100) %>%
+      mutate(Treatment=factor(x = Treatment, levels = perturb_order))   
+    
+    p = ggplot(data = tmp_data, 
+               aes(Treatment, Description)) + 
+      geom_tile(aes(fill = -log10(pvalue)), colour = "white") + 
+      theme_bw() + 
+      theme(legend.position = "top", 
+            axis.text.x = element_text(angle = 90, size=12,vjust = .5, hjust = 1, color="black"), 
+            axis.text.y = element_text(size=12, color="black"), 
+            axis.title = element_blank(), 
+            strip.text = element_text(size=20)) + 
+      facet_wrap(~cell) + 
+      scale_fill_gradient2(low="blue", mid = "white", high="red", midpoint = 0) 
+    ggsave(filename = paste0('../IR-GxE-4Sharing/manuscript/TableS04_DE_Enrichment_Not_to_be_included_in_manuscript/enrichmentDE_',data_bases[i],'_ORA.pdf'), 
+           plot = p, width = 20, height = h[i], limitsize = F)
+  }
+```
+
+<!-- Plot ORA results for shared pathways -->
+```{r, eval=FALSE, fig.height = 20, fig.width = 15, fig.align = "center"}
+np=5
+nc=3
+pF=0.05
+
+shared_pathways=unique((ORA_res_consensusPathDB %>% group_by(Description,cell) %>% summarise(nP=sum(qvalue<=pF)) %>% filter(nP>=np) %>% group_by(Description) %>% summarise(nC=n()) %>% filter(nC==nc))$Description)
+ORA_shared=ORA_res_consensusPathDB %>% filter(qvalue<=pF & Description %in% shared_pathways) %>%  
+  mutate(Treatment=factor(x = Treatment, levels = perturb_order))
+
+ORA_shared$medLog2FoldChange=NA
+for(i in 1:nrow(ORA_shared)){
+  res_i=ORA_shared[i,]
+  ORA_shared$medLog2FoldChange[i]=median((results_all_pairs %>% filter(cell== res_i$cell & Treatment==res_i$Treatment&geneID %in% unlist(strsplit(as.character(res_i[1,"geneID"]),split = '/'))))$log2FoldChange)
+  print(c(i,nrow(ORA_shared)))
+}
+
+p=ggplot(data = ORA_shared %>%  mutate(Description=gsub(pattern = " - Homo sapiens \\(human\\)", replacement = "", x = Description)), aes(Treatment, str_wrap(Description,200))) + 
+  geom_point(aes(col=as.numeric(medLog2FoldChange),size = -log10(pvalue))) + 
+  theme_bw() + 
+  theme(legend.position = "top", axis.text.x = element_text(angle = 90, size=12,vjust = .5, hjust = 1, color="black"),  axis.text.y = element_text(size=12, color="black"), axis.title = element_blank(), strip.text = element_text(size=20)) + 
+  facet_wrap(~cell) + scale_color_gradient2(low="blue", mid = "white", high="red", midpoint = 0, limits=c(-max(abs(ORA_shared$medLog2FoldChange)),max(abs(ORA_shared$medLog2FoldChange))))  + 
+  guides(size=guide_legend(title = "-log10(Enrichment P-value)"), col= guide_colorbar(title = "Pathway direction")) + scale_x_discrete(drop=FALSE)
+p
+```
+
+<!-- Plot ORA results for Insulin resistance/signaling pathways -->
+```{r, eval=FALSE, fig.height = 5, fig.width = 15, fig.align = "center"}
+InsulinORA=ORA_res_consensusPathDB %>% filter(qvalue<=pF) %>% filter(grepl(pattern = "Insulin", x = Description)) %>%  mutate(Description=gsub(pattern = " - Homo sapiens \\(human\\)", replacement = "", x = Description))
+InsulinORA$medLog2FoldChange=NA
+for(i in 1:nrow(InsulinORA)){
+  res_i=InsulinORA[i,]
+  InsulinORA$medLog2FoldChange[i]=median((results_all_pairs %>% filter(cell== res_i$cell & Treatment==res_i$Treatment&geneID %in% unlist(strsplit(as.character(res_i[1,"geneID"]),split = '/'))))$log2FoldChange)
+  print(c(i,nrow(InsulinORA)))
+  
+}
+p=ggplot(data = InsulinORA %>%  mutate(Treatment=factor(x = Treatment, levels = perturb_order)), aes(Treatment, str_wrap(Description,50))) + 
+  geom_point(aes(col=as.numeric(medLog2FoldChange),size = -log10(pvalue))) + 
+  theme_bw() + 
+  theme(legend.position = "top", axis.text.x = element_text(angle = 90, size=12,vjust = .5, hjust = 1, color="black"),  axis.text.y = element_text(size=12, color="black"), axis.title = element_blank(), strip.text = element_text(size=20)) + 
+  facet_wrap(~cell) + scale_color_gradient2(low="blue", mid = "white", high="red", midpoint = 0, limits=c(-max(abs(InsulinORA$medLog2FoldChange)),max(abs(InsulinORA$medLog2FoldChange))))  + 
+  guides(size=guide_legend(title = "-log10(Enrichment P-value)"), col= guide_colorbar(title = "Pathway direction")) + scale_x_discrete(drop=FALSE)
+p
+```
+
+Next, we (Ivan and Josh) picked a subset of pathways that show interesting enrichment patterns and show enrichemnt results for these pathways below. First, we plot results from hierarchically clustering the subset of pathways based on the genes involved in them; this plot will be used to reduce redundancy in pathways and to identify closely related pathways. 
+
+<!-- Process ORA results for pathways of interest, picked by Ivan and Josh -->
+```{r, eval=TRUE, fig.height = 20, fig.width = 15, fig.align = "center"}
+# Subset results for pathway of interest
+pathways = read_xls(path = '../results/EnrichmentAnalyses/Enrichment_DE_genes/pathways_of_interest_Ivan_20200701.xls')$Pathway   
+
+if(0){
+  ORA_res_consensusPathDB_filtered = ORA_res_consensusPathDB  %>% filter(Description %in% pathways) %>% mutate(Description=gsub(pattern = "- Homo sapiens \\(human\\)", replacement = "", x = Description)) 
+  
+  ORA_res_consensusPathDB_filtered$medLog2FoldChange=NA
+  for(i in 1:nrow(ORA_res_consensusPathDB_filtered)){
+    res_i=ORA_res_consensusPathDB_filtered[i,]
+    ORA_res_consensusPathDB_filtered$medLog2FoldChange[i]=median((results_all_pairs %>% filter(cell== res_i$cell & Treatment==res_i$Treatment&geneID %in% unlist(strsplit(as.character(res_i[1,"geneID"]),split = '/'))))$log2FoldChange)
+    print(c(i,nrow(ORA_res_consensusPathDB_filtered)))
+  }
+  write.csv(x = ORA_res_consensusPathDB_filtered, file = '../results/EnrichmentAnalyses/Enrichment_DE_genes/ORA_pathways_of_interest.csv',quote = T,row.names = F)
+}
+ORA_res_consensusPathDB_filtered = read.csv(file = '../results/EnrichmentAnalyses/Enrichment_DE_genes/ORA_pathways_of_interest.csv',header = T)
+
+### Cluster pathways of interest, picked by Ivan and Josh, by DE genes
+if(0){
+  pathways = unique(ORA_res_consensusPathDB_filtered$Description)
+  
+  consensusDB_long_f=consensusDB_long %>% mutate(pathway_source=gsub(pattern = "- Homo sapiens \\(human\\)", replacement = "", x = pathway_source)) 
+  consensusDB_long_f$pathway_source[str_count(string=consensusDB_long_f$pathway_source, pattern = ":")>1] = sub(pattern = ":", replacement = ",", x = consensusDB_long_f$pathway_source[str_count(string=consensusDB_long_f$pathway_source, pattern = ":")>1])
+  consensusDB_long_f = droplevels(consensusDB_long_f %>%  filter(pathway_source %in% pathways))
+  
+  unique_DE_genes=unique(unlist(strsplit(as.character(ORA_res_consensusPathDB_filtered$geneID),split = '/')))
+  DE_genes_in_path = matrix(data = 0, nrow = length(pathways), ncol = length(unique_DE_genes),dimnames = list(pathways, unique_DE_genes))
+
+  unique_genes=unique(consensusDB_long_f$genes)
+  genes_in_path = matrix(data = 0, nrow = length(pathways), ncol = length(unique_genes),dimnames = list(pathways, unique_genes))
+  
+  for(pathway in pathways){
+    
+    DE_genes_in_path[pathway,colnames(DE_genes_in_path) %in% unique(unlist(strsplit(as.character(ORA_res_consensusPathDB_filtered[ORA_res_consensusPathDB_filtered$Description == pathway,]$geneID),split = '/')))] = 1
+    genes_in_path[pathway,colnames(genes_in_path) %in% unique(consensusDB_long_f[consensusDB_long_f$pathway_source == pathway,]$genes)] = 1
+    
+  }
+  
+  write.table(x = DE_genes_in_path, file = '../results/EnrichmentAnalyses/Enrichment_DE_genes/ORA_pathways_of_interest_by_DE_gene.tab',quote = T,sep = '\t',row.names = T, col.names = T)
+  
+  write.table(x = genes_in_path, file = '../results/EnrichmentAnalyses/Enrichment_DE_genes/ORA_pathways_of_interest_by_gene.tab',quote = T,sep = '\t',row.names = T, col.names = T)
+}
+
+# DE_genes_in_path=read.table(file = '../results/EnrichmentAnalyses/Enrichment_DE_genes/ORA_pathways_of_interest_by_DE_gene.tab',header = T,row.names = 1)
+# d_DE=dist(DE_genes_in_path)
+# hc_DE=hclust(d_DE)
+# plot(hc_DE, hang = -1) 
+
+genes_in_path=read.table(file = '../results/EnrichmentAnalyses/Enrichment_DE_genes/ORA_pathways_of_interest_by_gene.tab',header = T,row.names = 1)
+d=dist(genes_in_path)
+hc=hclust(d)
+plot(hc, hang = -1,main = "Hierarchical clustering of interesting pathways according to the genes in them.") 
+```
+
+We then plot the ORA enrichemnt results for these pathway ordering the pathways according to the clustering above. Each row represents a pathway, each column represents a perturbation. Each cell shows the -log10(p-value) from ORA; large numbers (darker colors) reflect the degree to which a gene set is overrepresented in the list of perturbation-specific genes.
+
+<!-- Plot ORA results for pathways of interest  -->
+```{r, eval=TRUE, fig.height = 20, fig.width = 17, fig.align = "center"}
+ORA_res_consensusPathDB = read.csv(file = '../results/EnrichmentAnalyses/Enrichment_DE_genes/ORA_pathways_of_interest.csv',header = T)
+
+pF=.05
+ORA_res_consensusPathDB %<>% filter(qvalue<=pF)
+# data_bases=unique(matrix(unlist(strsplit(x = ORA_res_consensusPathDB$Description, split = ":")), ncol = 2, byrow = T)[,2])
+order_perturb=paste(rep(x = cell_labels,each=length(perturb_order)), perturb_order, sep = "_")
+
+data_p=ORA_res_consensusPathDB %>% 
+  mutate(Description=factor(x = Description, levels = rownames(genes_in_path)[hc$order][nrow(genes_in_path):1]), 
+         Treatment=factor(x = Treatment, levels = perturb_order))
+
+# levels(data_p$Description)= gsub(pattern = paste(c(data_bases,":"),collapse = "|"), replacement = "", x = levels(data_p$Description) )
+
+levels(data_p$Description) = str_wrap(string = levels(data_p$Description) , width = 90)
+
+p_ORA=ggplot(data = data_p,  aes(x = Treatment,y = Description)) + 
+  geom_tile(aes(fill = -log10(pvalue)), colour = "white") +
+  theme_bw() + 
+  theme(legend.position = "top", 
+        axis.text.x = element_text(angle = 90, size=12, vjust = .5, hjust = 1, color="black"),
+        axis.text.y = element_text(size=12, color="black"), 
+        axis.title = element_blank(), 
+        strip.text = element_text(size=20)) + 
+  facet_grid(~cell) +
+  scale_fill_gradient2(low="white", mid = "pink", high="red", midpoint = 5) +
+  guides(col=guide_legend(title = "-log10(pvalue)")) +
+  scale_x_discrete(drop=FALSE) + 
+  ggtitle(label = "Pathways are ordered according to clustering of the genes in them.")
+p_ORA
+```
+
+In addition, we perform hierarchical clustering of the enrichment results based on enrichment strenght, i.e. -log10(P), and strenght and direction, i.e. median log2(Fold change) of DE genes in the pathway. These plots can help us identify clusters of pathways with similar enrichment patterns, e.g. pathways enriched in all perturbations, pathways specific to fat etc, as well as cluster the perturbations and cell types according to similar enriched pathways. 
+
+```{r, eval=TRUE, fig.height = 20, fig.width = 17, fig.align = "center"}
+ tmp=data.frame(dcast(data = ORA_res_consensusPathDB %>% mutate(minusLog10P=-log10(pvalue)), Description ~ cell + Treatment, value.var="minusLog10P"), row.names = 1, check.names = F)
+  tmp[is.na(tmp)]=0
+  tmp=as.matrix(tmp[,order_perturb[order_perturb %in% colnames(tmp)]])
+ 
+p=suppress_plot(heatmap(as.matrix(tmp)))
+
+data_p=ORA_res_consensusPathDB %>% tidyr::unite(cell_tr,cell,Treatment) %>% 
+  mutate(Description=factor(x = Description, levels = rownames(tmp)[p$rowInd]), 
+         cell_tr=factor(x = cell_tr, levels = colnames(tmp)[p$colInd])) %>% 
+  filter(!is.na(Description))
+
+# levels(data_p$Description)= gsub(pattern = paste(c(data_bases,":"),collapse = "|"), replacement = "", x = levels(data_p$Description) )
+
+levels(data_p$Description) = str_wrap(string = levels(data_p$Description) , width = 90)
+
+p_ORA=ggplot(data = data_p, aes(x = cell_tr, y = Description)) + 
+  geom_tile(aes(fill = -log10(pvalue)), colour = "white") +
+  theme_bw() + 
+  theme(legend.position = "top", 
+        axis.text.x = element_text(angle = 90, size=12, vjust = .5, hjust = 1, color="black"), 
+        axis.text.y = element_text(size=12, color="black"), 
+        axis.title = element_blank(), 
+        strip.text = element_text(size=20)) + 
+  scale_fill_gradient2(low="white", mid = "pink", high="red", midpoint = 5) + 
+  guides(col=guide_legend(title = "-log10(pvalue)")) +
+  scale_x_discrete(drop=FALSE) + 
+  ggtitle(label = "Pathways and perturbations/cells are ordered according to -log10(Enrichment P).")
+
+
+p_ORA
+```
+
+
+```{r, eval=TRUE, fig.height = 20, fig.width = 17, fig.align = "center"}
+tmp=data.frame(dcast(data = ORA_res_consensusPathDB, Description ~ cell + Treatment, value.var="medLog2FoldChange"), row.names = 1, check.names = F)
+  tmp[is.na(tmp)]=0
+  tmp=as.matrix(tmp[,order_perturb[order_perturb %in% colnames(tmp)]])
+
+p=suppress_plot(heatmap(as.matrix(tmp)))
+
+data_p=ORA_res_consensusPathDB %>% tidyr::unite(cell_tr,cell,Treatment) %>% 
+  mutate(Description=factor(x = Description, levels = rownames(tmp)[p$rowInd]), 
+         # Treatment=factor(x = Treatment, levels = perturb_order),
+         cell_tr=factor(x = cell_tr, levels = colnames(tmp)[p$colInd])) %>% 
+  filter(!is.na(Description))
+
+# levels(data_p$Description)= gsub(pattern = paste(c(data_bases,":"),collapse = "|"), replacement = "", x = levels(data_p$Description) )
+
+levels(data_p$Description) = str_wrap(string = levels(data_p$Description) , width = 90)
+
+p_ORA=ggplot(data = data_p, 
+             # aes(x = Treatment,y = Description)
+             aes(x = cell_tr, y = Description)
+) + 
+  # geom_tile(aes(fill = -log10(pvalue)), colour = "white") +
+  geom_point(aes(col=medLog2FoldChange,size = -log10(pvalue))) +
+  theme_bw() + 
+  theme(legend.position = "top", 
+        axis.text.x = element_text(angle = 90, size=12, vjust = .5, hjust = 1, color="black"), 
+        axis.text.y = element_text(size=12, color="black"), 
+        axis.title = element_blank(), 
+        strip.text = element_text(size=20)) + 
+  # facet_grid(~cell) +
+  # scale_fill_gradient2(low="white", mid = "pink", high="red", midpoint = 5)
+  scale_color_gradient2(low="blue", mid = "white", high="red", midpoint = 0) +
+  # , limits=c(-max(abs(data_p$medLog2FoldChange)),max(abs(data_p$medLog2FoldChange)))
+  guides(size=guide_legend(title = "-log10(pvalue)"),
+         col= guide_colorbar(title = "Median log2FC of DE genes")) +
+  scale_x_discrete(drop=FALSE) + 
+  ggtitle(label = "Pathways and perturbations/cells are ordered according to Median log2FC of DE genes.")
+
+p_ORA
+```
+
+
+#### Enrichment analyses of treatment-specific DE genes
+I used the R package _clusterProfiler_ to perform over-representation analysis (ORA) of perturbation-specific genes in pathways in in the ConsensusPathDB. Each row represents a pathway, each column represents a perturbation. Each cell shows the -log10(p-value) from ORA. Large numbers (darker colors) reflect the degree to which a gene set is overrepresented in the list of perturbation-specific genes. 
+
+```{r, eval=FALSE}
+treat_spec_HEPG2=sig5FDR_MT_short_HEPG2[rowSums(sig5FDR_MT_short_HEPG2)==1,]
+treat_spec_SGBS=sig5FDR_MT_short_SGBS[rowSums(sig5FDR_MT_short_SGBS)==1,]
+treat_spec_SKMC=sig5FDR_MT_short_SKMC[rowSums(sig5FDR_MT_short_SKMC)==1,]
+
+# Pathways in the ConsencusPathDB
+consensusDB_long=fread(input = '../results/EnrichmentAnalyses/Enrichment_DE_genes/consensusPathDB_pathways_genes_long.tab', sep = '\t', header = T, check.names = F, stringsAsFactors = F)
+
+for(i in 1:length(colnames(treat_spec_HEPG2))){
+  treatment_i=colnames(treat_spec_HEPG2)[i]
+  
+  genes_HEPG2=rownames(treat_spec_HEPG2)[treat_spec_HEPG2[,i]]
+  if(length(genes_HEPG2)>=5){
+    ora <- data.frame(enricher(gene = genes_HEPG2, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], pvalueCutoff = 1))
+    if(nrow(ora)!=0) WriteXLS(x=ora[,-1], ExcelFileName = paste0('../results/DE/Enrichment_Treatment_Specific/TreatSpec_ORA_conPathDB_Liver_',treatment_i,'.xls'), SheetNames = paste0("Liver","_",treatment_i), col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+  }
+  
+  genes_SGBS=rownames(treat_spec_SGBS)[treat_spec_SGBS[,i]]
+  if(length(genes_SGBS)>=5){
+    ora <- data.frame(enricher(gene = genes_SGBS, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], pvalueCutoff = 1))
+    if(nrow(ora)!=0) WriteXLS(x=ora[,-1], ExcelFileName = paste0('../results/DE/Enrichment_Treatment_Specific/TreatSpec_ORA_conPathDB_Fat_',treatment_i,'.xls'), SheetNames = paste0("Fat","_",treatment_i), col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+  }
+  
+  genes_SKMC=rownames(treat_spec_SKMC)[treat_spec_SKMC[,i]]
+  if(length(genes_SKMC)>=5){
+    ora <- data.frame(enricher(gene = genes_SKMC, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], pvalueCutoff = 1))
+    if(nrow(ora)!=0) WriteXLS(x=ora[,-1], ExcelFileName = paste0('../results/DE/Enrichment_Treatment_Specific/TreatSpec_ORA_conPathDB_Muscle_',treatment_i,'.xls'), SheetNames = paste0("Muscle","_",treatment_i), col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+  }
+  print(i)
+}
+
+# Pathways in msigDB
+if(0){
+library(org.Hs.eg.db)
+library(WebGestaltR)
+library(msigdbr)
+
+x = bitr(geneID = rownames(treat_spec_HEPG2), fromType = 'SYMBOL', toType = 'ENTREZID', OrgDb = org.Hs.eg.db, drop = TRUE)
+y = bitr(geneID = rownames(treat_spec_HEPG2), fromType = 'ENSEMBL', toType = 'ENTREZID', OrgDb = org.Hs.eg.db, drop = TRUE)
+colnames(x)=colnames(y)
+treat_spec_HEPG2_genes=rbind(x,y)
+treat_spec_HEPG2_genes=data.frame(merge(x = treat_spec_HEPG2_genes, y = data.table(treat_spec_HEPG2, keep.rownames = T), by.x="ENSEMBL", by.y="rn"), check.names = F)
+rownames(treat_spec_HEPG2_genes)=treat_spec_HEPG2_genes$ENTREZID
+treat_spec_HEPG2_genes=treat_spec_HEPG2_genes[,-c(1:2)]
+
+x = bitr(geneID = rownames(treat_spec_SGBS), fromType = 'SYMBOL', toType = 'ENTREZID', OrgDb = org.Hs.eg.db, drop = TRUE)
+y = bitr(geneID = rownames(treat_spec_SGBS), fromType = 'ENSEMBL', toType = 'ENTREZID', OrgDb = org.Hs.eg.db, drop = TRUE)
+colnames(x)=colnames(y)
+treat_spec_SGBS_genes=rbind(x,y)
+treat_spec_SGBS_genes=data.frame(merge(x = treat_spec_SGBS_genes, y = data.table(treat_spec_SGBS, keep.rownames = T), by.x="ENSEMBL", by.y="rn"), check.names = F)
+rownames(treat_spec_SGBS_genes)=treat_spec_SGBS_genes$ENTREZID
+treat_spec_SGBS_genes=treat_spec_SGBS_genes[,-c(1:2)]
+
+x = bitr(geneID = rownames(treat_spec_SKMC), fromType = 'SYMBOL', toType = 'ENTREZID', OrgDb = org.Hs.eg.db, drop = TRUE)
+y = bitr(geneID = rownames(treat_spec_SKMC), fromType = 'ENSEMBL', toType = 'ENTREZID', OrgDb = org.Hs.eg.db, drop = TRUE)
+colnames(x)=colnames(y)
+treat_spec_SKMC_genes=rbind(x,y)
+treat_spec_SKMC_genes=data.frame(merge(x = treat_spec_SKMC_genes, y = data.table(treat_spec_SKMC, keep.rownames = T), by.x="ENSEMBL", by.y="rn"), check.names = F)
+rownames(treat_spec_SKMC_genes)=treat_spec_SKMC_genes$ENTREZID
+treat_spec_SKMC_genes=treat_spec_SKMC_genes[,-c(1:2)]
+
+msig_c2 <- msigdbr(species = "Homo sapiens", category = "C2") %>% dplyr::select(gs_name, entrez_gene)
+msig_H <- msigdbr(species = "Homo sapiens", category = "H") %>% dplyr::select(gs_name, entrez_gene)
+
+# Extract summary statistics for cell j and treatment i
+for(i in 1:length(colnames(treat_spec_HEPG2))){
+  treatment_i=colnames(treat_spec_HEPG2)[i]
+  
+  genes_HEPG2=rownames(treat_spec_HEPG2_genes)[treat_spec_HEPG2_genes[,treatment_i]]
+  if(length(genes_HEPG2)>=5){
+  emC2 <- enricher(gene = genes_HEPG2, TERM2GENE = msig_c2, pvalueCutoff = .1)
+  if(!is.null(emC2)) write.table(x = emC2, file = paste0('../results/DE/Enrichment_Treatment_Specific/ORA_msigDB_C2_10prcFDR_HEPG2_',treatment_i,'.tsv'), quote = F, sep = '\t', row.names = F, col.names = T)
+  
+  emH <- enricher(gene = genes_HEPG2, TERM2GENE = msig_H, pvalueCutoff = .1)
+  if(!is.null(emH)) write.table(x = emH, file = paste0('../results/DE/Enrichment_Treatment_Specific/ORA_msigDB_H_10prcFDR_HEPG2_',treatment_i,'.tsv'), quote = F, sep = '\t', row.names = F, col.names = T)
+  }
+  
+  genes_SGBS=rownames(treat_spec_SGBS_genes)[treat_spec_SGBS_genes[,treatment_i]]
+  if(length(genes_SGBS)>=5){
+    emC2 <- enricher(gene = genes_SGBS, TERM2GENE = msig_c2, pvalueCutoff = .1)
+    if(!is.null(emC2)) write.table(x = emC2, file = paste0('../results/DE/Enrichment_Treatment_Specific/ORA_msigDB_C2_10prcFDR_SGBS_',treatment_i,'.tsv'), quote = F, sep = '\t', row.names = F, col.names = T)
+    
+    emH <- enricher(gene = genes_SGBS, TERM2GENE = msig_H, pvalueCutoff = .1)
+    if(!is.null(emH)) write.table(x = emH, file = paste0('../results/DE/Enrichment_Treatment_Specific/ORA_msigDB_H_10prcFDR_SGBS_',treatment_i,'.tsv'), quote = F, sep = '\t', row.names = F, col.names = T)
+  }
+  
+    genes_SKMC=rownames(treat_spec_SKMC_genes)[treat_spec_SKMC_genes[,treatment_i]]
+  if(length(genes_SKMC)>=5){
+    emC2 <- enricher(gene = genes_SKMC, TERM2GENE = msig_c2, pvalueCutoff = .1)
+    if(!is.null(emC2)) write.table(x = emC2, file = paste0('../results/DE/Enrichment_Treatment_Specific/ORA_msigDB_C2_10prcFDR_SKMC_',treatment_i,'.tsv'), quote = F, sep = '\t', row.names = F, col.names = T)
+    
+    emH <- enricher(gene = genes_SKMC, TERM2GENE = msig_H, pvalueCutoff = .1)
+    if(!is.null(emH)) write.table(x = emH, file = paste0('../results/DE/Enrichment_Treatment_Specific/ORA_msigDB_H_10prcFDR_SKMC_',treatment_i,'.tsv'), quote = F, sep = '\t', row.names = F, col.names = T)
+  }
+  
+
+  print(c(treatment_i))
+}
+}
+
+```
+
+<!-- # Summarize ORA for pathways in the ConsencusPathDB -->
+```{r, eval=FALSE, fig.height = 10, fig.width = 15, fig.align = "center"}
+if(1){
+  
+  if(0){
+    ORA_consensusPathDB=list.files(path = '../results/EnrichmentAnalyses/Enrichment_Treatment_Specific', pattern = 'TreatSpec_ORA_conPathDB_', full.names = T)
+    ORA_res_consensusPathDB=NULL
+    for(i in 1:length(ORA_consensusPathDB)){
+      ORA_res_i=read_xls(path = ORA_consensusPathDB[i], col_names = T)
+      cell_treat_i=strsplit(ORA_consensusPathDB[i], split = "[_ .]+")[[1]][7:8]
+      if(nrow(ORA_res_i)!=0 )ORA_res_consensusPathDB=rbind(ORA_res_consensusPathDB,data.frame(cell=cell_treat_i[1], Treatment=cell_treat_i[2],ORA_res_i))
+    }
+    
+    WriteXLS(x = ORA_res_consensusPathDB,ExcelFileName = '../manuscript/Tables/TableS05_Pathway_Enrichment_PerturbationSpecificGenes.xls',row.names = F,col.names = T,AdjWidth = TRUE,BoldHeaderRow = T,FreezeRow = 3, FreezeCol = 1)  
+  }
+  
+  ORA_res_consensusPathDB =read_xls(path = '../manuscript/Tables/TableS05_Pathway_Enrichment_PerturbationSpecificGenes.xls')
+  ORA_res_consensusPathDB=droplevels(ORA_res_consensusPathDB[ORA_res_consensusPathDB$qvalue<=.05,])
+  
+  ORA_res_consensusPathDB$Description[str_count(string=ORA_res_consensusPathDB$Description, pattern = ":")>1] = sub(pattern = ":", replacement = ",", x = ORA_res_consensusPathDB$Description[str_count(string=ORA_res_consensusPathDB$Description, pattern = ":")>1])
+  
+  data_bases=unique(matrix(unlist(strsplit(x = ORA_res_consensusPathDB$Description, split = ":")), ncol = 2, byrow = T)[,2])
+  i=12
+  p = ggplot(data = ORA_res_consensusPathDB%>% filter(grepl(pattern = data_bases[i], x = Description)) , aes(Treatment, gsub(pattern = paste0(":", data_bases[i]), replacement = "", x = Description))) + 
+    geom_tile(aes(fill = -log10(pvalue)), colour = "white") + 
+    theme_bw() + 
+    theme(legend.position = "top", 
+          axis.text.x = element_text(angle = 90, size=12), 
+          axis.text.y = element_text(size=12), 
+          axis.title = element_blank(), 
+          strip.text = element_text(size=20)) + 
+    facet_wrap(~cell) + 
+    scale_fill_gradient2(low="blue", mid = "white", high="red", midpoint = 0) 
+  # ggsave(filename = paste0('~/Box Sync/IR-GxE/manuscript/Tables/TabS05_DESpec_Enrichment/ORA_summaryPlot_DE_',data_bases[i],'.pdf'), plot = p, width = 15, height = 5, limitsize = F)
+p
+}
+```
+
+<!-- # Summarize ORA for pathways in the msigDB -->
+```{r, eval=FALSE, fig.height = 10, fig.width = 15, fig.align = "center"}
+ORA_msigDB_H_files=list.files(path = '../results/DE/Enrichment_Treatment_Specific/', pattern = 'ORA_msigDB_H_10prcFDR_', full.names = T)
+ORA_res_msigDB_H=NULL
+for(i in 1:length(ORA_msigDB_H_files)){
+  ORA_res_i=read.table(file = ORA_msigDB_H_files[i], header = T, sep = '\t')
+  cell_treat_i=gsub(x = strsplit(ORA_msigDB_H_files[i], split = '_')[[1]][7:8], pattern = ".tsv", replacement = "")
+  if(nrow(ORA_res_i)!=0) ORA_res_msigDB_H=rbind(ORA_res_msigDB_H,data.frame(ORA_res_i, cell=cell_treat_i[1], Treatment=cell_treat_i[2]))
+}
+ORA_res_msigDB_H_5qval=droplevels(ORA_res_msigDB_H[ORA_res_msigDB_H$p.adjust<=.05,])
+ORA_res_msigDB_H_5qval$ID=gsub(pattern = "HALLMARK_", replacement = "",x = ORA_res_msigDB_H_5qval$ID)
+
+tmp_mat_ORA=matrix(data = as.numeric(unlist(strsplit(x = as.character(ORA_res_msigDB_H_5qval$GeneRatio), split = '/'))), ncol = 2, byrow = T)
+ORA_res_msigDB_H_5qval$Denom=tmp_mat_ORA[,2]
+
+ORA_res_msigDB_H_5qval$cell = factor(ORA_res_msigDB_H_5qval$cell, levels = c("HEPG2", "SKMC", "SGBS"), labels=c("HepG2", "HMCL-7304", "SGBS"))
+  
+ggplot(data = ORA_res_msigDB_H_5qval, aes(Treatment,ID)) + 
+  geom_tile(aes(fill = -log10(p.adjust)), colour = "white") + 
+  theme_bw() + 
+  theme(legend.position = "top", 
+        axis.text.x = element_text(angle = 90, size=15), axis.text.y = element_text(size=15), axis.title = element_blank(), strip.text = element_text(size=20)) + facet_wrap(~cell) + scale_fill_gradient2(low="pink", high="red", midpoint = 0.05) 
+```
+
+#### Enrichment analyses for perturbation-and-cell-type specific DE genes. 
+```{r, eval=FALSE}
+library("WriteXLS")
+library(clusterProfiler)
+
+# Pathways in the ConsencusPathDB
+# Process consensusPathDB to fit clusterProfiler format
+consensusDB=fread(input = '../results/EnrichmentAnalyses/Enrichment_DE_genes/consensusPathDB_pathways_genes.tab', sep = '\t')
+consensusDB$pathway_source=paste(consensusDB$pathway, consensusDB$source, sep = ":")
+
+consensusDB_long=NULL
+for(i in 1:nrow(consensusDB)){
+  consensusDB_long=rbind(consensusDB_long,
+                         cbind(pathway=consensusDB$pathway[i], 
+                               source=consensusDB$source[i], 
+                               pathway_source=consensusDB$pathway_source[i], 
+                               genes=unlist(strsplit(x = consensusDB$hgnc_symbol_ids[i], split = ',', fixed = T))))
+}
+
+for(i in 1:length(colnames(treat_and_cell_spec_HEPG2))){
+  treatment_i=colnames(treat_and_cell_spec_HEPG2)[i]
+  
+  genes_HEPG2=rownames(treat_and_cell_spec_HEPG2)[treat_and_cell_spec_HEPG2[,i]]
+  if(length(genes_HEPG2)>=5){
+    ora <- data.frame(enricher(gene = genes_HEPG2, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], pvalueCutoff = 1))
+    if(nrow(ora)!=0) WriteXLS(x=ora[,-1], ExcelFileName = paste0('../results/DE/Enrichment_Treatment_Cell_Specific/TreatCellSpec_ORA_conPathDB_Liver_',treatment_i,'.xls'), SheetNames = paste0("Liver","_",treatment_i), col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+  }
+  
+  genes_SGBS=rownames(treat_and_cell_spec_SGBS)[treat_and_cell_spec_SGBS[,i]]
+  if(length(genes_SGBS)>=5){
+    ora <- data.frame(enricher(gene = genes_SGBS, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], pvalueCutoff = 1))
+    if(nrow(ora)!=0) WriteXLS(x=ora[,-1], ExcelFileName = paste0('../results/DE/Enrichment_Treatment_Cell_Specific/TreatCellSpec_ORA_conPathDB_Fat_',treatment_i,'.xls'), SheetNames = paste0("Fat","_",treatment_i), col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+  }
+  
+  genes_SKMC=rownames(treat_and_cell_spec_SKMC)[treat_and_cell_spec_SKMC[,i]]
+  if(length(genes_SKMC)>=5){
+    ora <- data.frame(enricher(gene = genes_SKMC, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], pvalueCutoff = 1))
+    if(nrow(ora)!=0) WriteXLS(x=ora[,-1], ExcelFileName = paste0('../results/DE/Enrichment_Treatment_Cell_Specific/TreatCellSpec_ORA_conPathDB_Muscle_',treatment_i,'.xls'), SheetNames = paste0("Muscle","_",treatment_i), col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+  }
+  print(i)
+}
+
+```
+
+```{r, eval=FALSE, fig.height = 10, fig.width = 15, fig.align = "center"}
+# ORA for pathways in the ConsencusPathDB
+if(1){
+if(0){
+    ORA_consensusPathDB=list.files(path = '../results/EnrichmentAnalyses/Enrichment_Treatment_Cell_Specific', pattern = 'TreatCellSpec_ORA_conPathDB_', full.names = T)
+  ORA_res_consensusPathDB=NULL
+  
+  for(i in 1:length(ORA_consensusPathDB)){
+    ORA_res_i=read_xls(path = ORA_consensusPathDB[i], col_names = T)
+    cell_treat_i=strsplit(ORA_consensusPathDB[i], split = "[_ .]+")[[1]][8:9]
+    if(nrow(ORA_res_i)!=0 )ORA_res_consensusPathDB=rbind(ORA_res_consensusPathDB,data.frame(cell=cell_treat_i[1], Treatment=cell_treat_i[2],ORA_res_i))
+  }
+  ORA_res_consensusPathDB=ORA_res_consensusPathDB[!is.na(ORA_res_consensusPathDB$qvalue),]
+WriteXLS(x = ORA_res_consensusPathDB,ExcelFileName = '../manuscript/Tables/TableS06_Pathway_Enrichment_PerturbationAndCellSpecificGenes.xls',row.names = F,col.names = T,BoldHeaderRow = 1,FreezeRow = 1,FreezeCol = 3,AdjWidth = T)
+}  
+  ORA_res_consensusPathDB=droplevels(ORA_res_consensusPathDB[ORA_res_consensusPathDB$qvalue<=.05,])
+  ORA_res_consensusPathDB$Description[str_count(string=ORA_res_consensusPathDB$Description, pattern = ":")>1] = sub(pattern = ":", replacement = ",", x = ORA_res_consensusPathDB$Description[str_count(string=ORA_res_consensusPathDB$Description, pattern = ":")>1])
+  
+  data_bases=unique(matrix(unlist(strsplit(x = ORA_res_consensusPathDB$Description, split = ":")), ncol = 2, byrow = T)[,2])
+  i=12
+  p = ggplot(data = ORA_res_consensusPathDB%>% filter(grepl(pattern = data_bases[i], x = Description)) , aes(Treatment, gsub(pattern = paste0(":", data_bases[i]), replacement = "", x = Description))) + 
+    geom_tile(aes(fill = -log10(pvalue)), colour = "white") + 
+    theme_bw() + 
+    theme(legend.position = "top", 
+          axis.text.x = element_text(angle = 90, size=12), 
+          axis.text.y = element_text(size=12), 
+          axis.title = element_blank(), 
+          strip.text = element_text(size=20)) + 
+    facet_wrap(~cell) + 
+    scale_fill_gradient2(low="blue", mid = "white", high="red", midpoint = 0) 
+  # ggsave(filename = paste0('~/Box Sync/IR-GxE/manuscript/Tables/TabS06_DE_PerturbCellSpec_Enrichment/ORA_summaryPlot_DE_',data_bases[i],'.pdf'), plot = p, width = 15, height = 5, limitsize = F)
+  p
+}
+```
+
+
+
+
+#### Enrichment analyses of genes shared and specific to insulin and glucose
+
+```{r, eval=FALSE}
+
+########### HEPG2
+tmp_HEPG2=(1*sig5FDR_MT_short_HEPG2*sign(dirDE_short_HEPG2))
+
+### Shared - same direction
+shared_same_HEPG2=rownames(tmp_HEPG2)[(tmp_HEPG2[,"GLUC"]==1 & tmp_HEPG2[,"INSU"]==1) | (tmp_HEPG2[,"GLUC"]==-1 & tmp_HEPG2[,"INSU"]==-1)]
+ora_shared_same_HEPG2 <- data.frame(enricher(gene = shared_same_HEPG2, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], qvalueCutoff = .05))
+if(nrow(ora_shared_same_HEPG2)!=0) WriteXLS(x=ora_shared_same_HEPG2[,-1], ExcelFileName = '../results/EnrichmentAnalyses/Enrichment_insulin_and_glucose_DE_genes/ORA_consensusDB_shared_same_HEPG2.xls', SheetNames = "shared_same_HEPG2", col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+
+### Shared - opposite direction
+shared_opposite_HEPG2=rownames(tmp_HEPG2)[(tmp_HEPG2[,"GLUC"]==1 & tmp_HEPG2[,"INSU"]==-1) | (tmp_HEPG2[,"GLUC"]==-1 & tmp_HEPG2[,"INSU"]==1)]
+ora_shared_opposite_HEPG2 <- data.frame(enricher(gene = shared_opposite_HEPG2, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], qvalueCutoff = .05))
+if(nrow(ora_shared_opposite_HEPG2)!=0) WriteXLS(x=ora_shared_opposite_HEPG2[,-1], ExcelFileName = '../results/EnrichmentAnalyses/Enrichment_insulin_and_glucose_DE_genes/ORA_consensusDB_shared_opposite_HEPG2.xls', SheetNames = "shared_opposite_HEPG2", col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+
+### Only insulin
+only_insulin_HEPG2=rownames(tmp_HEPG2)[tmp_HEPG2[,"GLUC"]==0 & tmp_HEPG2[,"INSU"]!=0] 
+ora_only_insulin_HEPG2 <- data.frame(enricher(gene = only_insulin_HEPG2, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], qvalueCutoff = .05))
+if(nrow(ora_only_insulin_HEPG2)!=0) WriteXLS(x=ora_only_insulin_HEPG2[,-1], ExcelFileName = '../results/EnrichmentAnalyses/Enrichment_insulin_and_glucose_DE_genes/ORA_consensusDB_only_insulin_HEPG2.xls', SheetNames = "only_insulin_HEPG2", col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+
+### Only glucose
+only_glucose_HEPG2=rownames(tmp_HEPG2)[tmp_HEPG2[,"GLUC"]!=0 & tmp_HEPG2[,"INSU"]==0] 
+ora_only_glucose_HEPG2 <- data.frame(enricher(gene = only_glucose_HEPG2, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], qvalueCutoff = .05))
+if(nrow(ora_only_glucose_HEPG2)!=0) WriteXLS(x=ora_only_glucose_HEPG2[,-1], ExcelFileName = '../results/EnrichmentAnalyses/Enrichment_insulin_and_glucose_DE_genes/ORA_consensusDB_only_glucose_HEPG2.xls', SheetNames = "only_glucose_HEPG2", col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+
+
+########### SGBS
+tmp_SGBS=(1*sig5FDR_MT_short_SGBS*sign(dirDE_short_SGBS))
+
+### Shared - same direction
+shared_same_SGBS=rownames(tmp_SGBS)[(tmp_SGBS[,"GLUC"]==1 & tmp_SGBS[,"INSU"]==1) | (tmp_SGBS[,"GLUC"]==-1 & tmp_SGBS[,"INSU"]==-1)]
+ora_shared_same_SGBS <- data.frame(enricher(gene = shared_same_SGBS, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], qvalueCutoff = .05))
+if(nrow(ora_shared_same_SGBS)!=0) WriteXLS(x=ora_shared_same_SGBS[,-1], ExcelFileName = '../results/EnrichmentAnalyses/Enrichment_insulin_and_glucose_DE_genes/ORA_consensusDB_shared_same_SGBS.xls', SheetNames = "shared_same_SGBS", col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+
+### Shared - opposite direction
+shared_opposite_SGBS=rownames(tmp_SGBS)[(tmp_SGBS[,"GLUC"]==1 & tmp_SGBS[,"INSU"]==-1) | (tmp_SGBS[,"GLUC"]==-1 & tmp_SGBS[,"INSU"]==1)]
+ora_shared_opposite_SGBS <- data.frame(enricher(gene = shared_opposite_SGBS, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], qvalueCutoff = .05))
+if(nrow(ora_shared_opposite_SGBS)!=0) WriteXLS(x=ora_shared_opposite_SGBS[,-1], ExcelFileName = '../results/EnrichmentAnalyses/Enrichment_insulin_and_glucose_DE_genes/ORA_consensusDB_shared_opposite_SGBS.xls', SheetNames = "shared_opposite_SGBS", col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+
+### Only insulin
+only_insulin_SGBS=rownames(tmp_SGBS)[tmp_SGBS[,"GLUC"]==0 & tmp_SGBS[,"INSU"]!=0] 
+ora_only_insulin_SGBS <- data.frame(enricher(gene = only_insulin_SGBS, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], qvalueCutoff = .05))
+if(nrow(ora_only_insulin_SGBS)!=0) WriteXLS(x=ora_only_insulin_SGBS[,-1], ExcelFileName = '../results/EnrichmentAnalyses/Enrichment_insulin_and_glucose_DE_genes/ORA_consensusDB_only_insulin_SGBS.xls', SheetNames = "only_insulin_SGBS", col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+
+### Only glucose
+only_glucose_SGBS=rownames(tmp_SGBS)[tmp_SGBS[,"GLUC"]!=0 & tmp_SGBS[,"INSU"]==0] 
+ora_only_glucose_SGBS <- data.frame(enricher(gene = only_glucose_SGBS, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], qvalueCutoff = .05))
+if(nrow(ora_only_glucose_SGBS)!=0) WriteXLS(x=ora_only_glucose_SGBS[,-1], ExcelFileName = '../results/EnrichmentAnalyses/Enrichment_insulin_and_glucose_DE_genes/ORA_consensusDB_only_glucose_SGBS.xls', SheetNames = "only_glucose_SGBS", col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+
+########### SKMC
+tmp_SKMC=(1*sig5FDR_MT_short_SKMC*sign(dirDE_short_SKMC))
+
+### Shared - same direction
+shared_same_SKMC=rownames(tmp_SKMC)[(tmp_SKMC[,"GLUC"]==1 & tmp_SKMC[,"INSU"]==1) | (tmp_SKMC[,"GLUC"]==-1 & tmp_SKMC[,"INSU"]==-1)]
+ora_shared_same_SKMC <- data.frame(enricher(gene = shared_same_SKMC, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], qvalueCutoff = .05))
+if(nrow(ora_shared_same_SKMC)!=0) WriteXLS(x=ora_shared_same_SKMC[,-1], ExcelFileName = '../results/EnrichmentAnalyses/Enrichment_insulin_and_glucose_DE_genes/ORA_consensusDB_shared_same_SKMC.xls', SheetNames = "shared_same_SKMC", col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+
+### Shared - opposite direction
+shared_opposite_SKMC=rownames(tmp_SKMC)[(tmp_SKMC[,"GLUC"]==1 & tmp_SKMC[,"INSU"]==-1) | (tmp_SKMC[,"GLUC"]==-1 & tmp_SKMC[,"INSU"]==1)]
+ora_shared_opposite_SKMC <- data.frame(enricher(gene = shared_opposite_SKMC, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], qvalueCutoff = .05))
+if(nrow(ora_shared_opposite_SKMC)!=0) WriteXLS(x=ora_shared_opposite_SKMC[,-1], ExcelFileName = '../results/EnrichmentAnalyses/Enrichment_insulin_and_glucose_DE_genes/ORA_consensusDB_shared_opposite_SKMC.xls', SheetNames = "shared_opposite_SKMC", col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+
+### Only insulin
+only_insulin_SKMC=rownames(tmp_SKMC)[tmp_SKMC[,"GLUC"]==0 & tmp_SKMC[,"INSU"]!=0] 
+ora_only_insulin_SKMC <- data.frame(enricher(gene = only_insulin_SKMC, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], qvalueCutoff = .05))
+if(nrow(ora_only_insulin_SKMC)!=0) WriteXLS(x=ora_only_insulin_SKMC[,-1], ExcelFileName = '../results/EnrichmentAnalyses/Enrichment_insulin_and_glucose_DE_genes/ORA_consensusDB_only_insulin_SKMC.xls', SheetNames = "only_insulin_SKMC", col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+
+### Only glucose
+only_glucose_SKMC=rownames(tmp_SKMC)[tmp_SKMC[,"GLUC"]!=0 & tmp_SKMC[,"INSU"]==0] 
+ora_only_glucose_SKMC <- data.frame(enricher(gene = only_glucose_SKMC, TERM2GENE=consensusDB_long[,c("pathway_source", "genes")], qvalueCutoff = .05))
+if(nrow(ora_only_glucose_SKMC)!=0) WriteXLS(x=ora_only_glucose_SKMC[,-1], ExcelFileName = '../results/EnrichmentAnalyses/Enrichment_insulin_and_glucose_DE_genes/ORA_consensusDB_only_glucose_SKMC.xls', SheetNames = "only_glucose_SKMC", col.names = TRUE, row.names = FALSE, BoldHeaderRow = T, FreezeRow = 1)
+```
+
+
+```{r, eval=FALSE}
+pathways2plot=read_xls(path = "../results/EnrichmentAnalyses/Enrichment_insulin_and_glucose_DE_genes/Pathways2Plot_Ivan_20200729.xls")
+consensusDB_gluc_vs_ins=consensusDB_long[consensusDB_long$pathway_source %in% pathways2plot$Pathway, ]
+path_by_gene=data.frame(reshape2::dcast(data = consensusDB_gluc_vs_ins[,c("pathway_source","genes")] %>% mutate(value.var=1), formula = pathway_source ~ genes, value.var="value.var"), row.names = "pathway_source", check.names = F)
+path_by_gene[is.na(path_by_gene)]=0
+write.csv(x = path_by_gene,file = "../results/EnrichmentAnalyses/Enrichment_insulin_and_glucose_DE_genes/genes_in_pathways_of_interest.csv",quote = F,row.names = T)
+
+ 
+```

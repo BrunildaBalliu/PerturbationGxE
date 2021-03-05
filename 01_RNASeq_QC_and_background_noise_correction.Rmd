@@ -1,0 +1,742 @@
+---
+title: "RNA-Seq Quality Control and Background Noise Correction"
+author: "Brunilda Balliu"
+date: "2/28/2019"
+output: html_document
+---
+
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, eval=TRUE)
+# R version 3.5.2 (2018-12-20) -- "Eggshell Igloo"
+# Copyright (C) 2018 The R Foundation for Statistical Computing
+# Platform: x86_64-apple-darwin15.6.0 (64-bit)
+```
+
+<!-- # Libraries, functions, and parameters -->
+
+```{r, message=FALSE, warning=FALSE}
+x=c("Biobase", "cowplot","data.table", "dplyr", "dendextend", "DESeq2", "ggplot2", "ggdendro", "ggrepel", "GGally", "gridExtra", "ggcorrplot", "GeneOverlap","ggrepel", "pheatmap" , "qvalue", "reshape2","RColorBrewer","sets", "stringr", "variancePartition", 'WebGestaltR','WriteXLS')
+garbage=lapply(x, require, character.only = TRUE)
+source('../../Functions.R')
+
+perturb_order=c("GLUC", "INSU", "IGF1", "SB20", "SP60", "U012", "WORT", "IL-6", "TGFB1", "TNFa", "ADIP", "LEPT", "ATOR", "ROSI", "METF", "DECA", "LAUR", "RETA", "DEXA", "IBMX", "ISOP")
+cell_order=c("HMCL-7304", "SGBS", "HEPG2")
+cell_labels=c("Muscle", "Fat", "Liver")
+cell_col=c("#E69F00", "#999999","#56B4E9")
+```
+
+<!-- Pairs to be tested together. -->
+```{r}
+Pairs_HEPG2=matrix(c(
+  "CNTR_G","GLUC", 
+  "CNTR1","INSU", 
+  "CNTR1","TNFa", 
+  "CNTR1","IL-6", 
+  "CNTR1","ROSI", 
+  "CNTR1","DEXA", 
+  "CNTR2","ISOP", 
+  "CNTR2","IGF1", 
+  "CNTR2","IBMX", 
+  "CNTR2","LAUR", 
+  "CNTR2","TGFB1", 
+  "CNTR2","METF", 
+  "CNTR2","ATOR", 
+  "CNTR3","ADIP", 
+  "CNTR3","LEPT", 
+  "CNTR3","SB20", 
+  "CNTR3","SP60", 
+  "CNTR3","U012", 
+  "CNTR3","WORT", 
+  "CNTR3","RETA", 
+  "CNTR4","DECA"), 
+  ncol = 2, byrow = T, dimnames = list(NULL, c("Member 1", "Member 2")))
+
+Pairs_SGBS=matrix(c(
+  "CNTR_G","GLUC", 
+  "CNTR1","INSU", 
+  "CNTR1","TNFa", 
+  "CNTR1","IL-6", 
+  "CNTR1","ROSI", 
+  "CNTR1","DEXA", 
+  "CNTR2","ISOP", 
+  "CNTR2","IGF1", 
+  "CNTR2","IBMX", 
+  "CNTR2","LAUR", 
+  "CNTR2","TGFB1", 
+  "CNTR2","METF", 
+  "CNTR2","ATOR", 
+  "CNTR3","ADIP", 
+  "CNTR3","LEPT", 
+  "CNTR3","SB20", 
+  "CNTR3","SP60", 
+  "CNTR3","U012", 
+  "CNTR3","WORT", 
+  "CNTR3","RETA", 
+  "CNTR4","DECA"), 
+  ncol = 2, byrow = T, dimnames = list(NULL, c("Member 1", "Member 2")))
+
+Pairs_SKMC=matrix(c(
+  "CNTR_G","GLUC", 
+  "CNTR1","INSU", 
+  "CNTR1","TNFa", 
+  "CNTR1","IL-6", 
+  "CNTR1","ROSI", 
+  "CNTR1","DEXA", 
+  "CNTR2","ISOP", 
+  "CNTR2","IGF1", 
+  "CNTR2","IBMX", 
+  "CNTR2","LAUR", 
+  "CNTR2","TGFB1",
+  "CNTR3","METF", 
+  "CNTR3","ATOR", 
+  "CNTR3","ADIP", 
+  "CNTR3","LEPT", 
+  "CNTR3","SB20", 
+  "CNTR3","SP60", 
+  "CNTR3","U012", 
+  "CNTR4","WORT", 
+  "CNTR4","RETA", 
+  "CNTR4","DECA"), 
+  ncol = 2, byrow = T, dimnames = list(NULL, c("Member 1", "Member 2")))
+
+```
+
+<!-- Set outliers, if any. Sample B_14_01 for SGBS cell lines is contaminated with E.choli and needs to be excluded.  -->
+```{r}
+Outliers="B_14_01"
+```
+
+<!-- Meta-data -->
+<!-- Several meta data are available for each cell line, e.g. RNA extraction, library preparation, and pre- and post-sequencing technical variables. Correlation matrix between meta data is plotted below. As expected, cellLine is highly correlated with plating, treatment, cell collection, and RNA extraction date, as well as sequencing batch.  -->
+
+```{r, eval=TRUE}
+meta_data_HEPG2=read.csv('../data/RNASeq/HEPG2_RNASeq_metadata_20190108.csv', check.names = F, stringsAsFactors = F)
+rownames(meta_data_HEPG2)=meta_data_HEPG2$SampleID2
+meta_data_HEPG2=meta_data_HEPG2[meta_data_HEPG2$Replicate %in% 1:3,] # Keep only three replicates per condition
+
+meta_data_SGBS=read.csv('../data/RNASeq/SGBS_RNASeq_metadata_20190108.csv', check.names = F, stringsAsFactors = F)
+rownames(meta_data_SGBS)=meta_data_SGBS$SampleID2
+meta_data_SGBS=meta_data_SGBS[meta_data_SGBS$Replicate %in% 1:3,] # Keep only three replicates per condition
+
+meta_data_SKMC=read.csv('../data/RNASeq/SKMC_RNASeq_metadata_20190612.csv', check.names = F, stringsAsFactors = F)
+rownames(meta_data_SKMC)=meta_data_SKMC$SampleID2
+meta_data_SKMC=meta_data_SKMC[meta_data_SKMC$Replicate %in% 1:3,] # Keep only three replicates per condition
+
+# Keep joint covariates
+joint_covs=intersect(intersect(colnames(meta_data_HEPG2),colnames(meta_data_SGBS)),colnames(meta_data_SKMC))
+meta_data_HEPG2=meta_data_HEPG2[,joint_covs] 
+meta_data_SGBS=meta_data_SGBS[,joint_covs] 
+meta_data_SKMC=meta_data_SKMC[,joint_covs] 
+
+# Add HEPG2 samples sequenced with SKMC to other HEPG2 samples
+# meta_data_HEPG2=rbind(meta_data_HEPG2, meta_data_SKMC[grep(pattern = "H",meta_data_SKMC$SampleID2),])
+meta_data_SKMC=meta_data_SKMC[-grep(pattern = "H",meta_data_SKMC$SampleID2),]
+
+# Get rid of outlier samples
+meta_data_SGBS=meta_data_SGBS[!rownames(meta_data_SGBS) %in% Outliers,]
+
+meta_data=rbindCommonCols(rbindCommonCols(meta_data_HEPG2,meta_data_SGBS), meta_data_SKMC)
+meta_data$RNA_concentration=scale(meta_data$RNA_concentration)
+meta_data$Conc_ng_per_ml=scale(meta_data$Conc_ng_per_ml)
+meta_data$RIN=scale(meta_data$RIN)
+
+```
+
+```{r, eval=FALSE, fig.width=10, fig.height=10}
+# Correlatin between meta data
+C_HEPG2 = canCorPairs(formula = ~ Treatment + RNA_concentration + RNA_260_280 + Conc_ng_per_ml + RIN + Sequencing_batch + prc_gc_content_avrg_r1_r2 + perc_PCR_duplicates + perc_star_uniquely_mapped_reads + perc_exon_overlap_reads, data = meta_data_HEPG2)
+plotCorrMatrix(C = C_HEPG2, margins = c(15,16))
+
+C_SGBS= canCorPairs(formula = ~ Treatment + RNA_concentration + RNA_260_280 + Conc_ng_per_ml + RIN  + prc_gc_content_avrg_r1_r2 + perc_PCR_duplicates + perc_star_uniquely_mapped_reads + perc_exon_overlap_reads, data = meta_data_SGBS)
+plotCorrMatrix(C = C_SGBS, margins = c(15,16))
+
+C_SKMC = canCorPairs(formula = ~ Treatment + RNA_concentration + RNA_260_280 + Conc_ng_per_ml + RIN + prc_gc_content_avrg_r1_r2 + perc_PCR_duplicates + perc_star_uniquely_mapped_reads + perc_exon_overlap_reads, data = meta_data_SKMC)
+plotCorrMatrix(C = C_SKMC, margins = c(15,16))
+
+C_joint = canCorPairs(formula = ~ CellLine + Treatment + RNA_concentration + RNA_260_280 + Conc_ng_per_ml + RIN + prc_gc_content_avrg_r1_r2 + perc_PCR_duplicates + perc_star_uniquely_mapped_reads + perc_exon_overlap_reads, data = meta_data)
+plotCorrMatrix(C = C_joint, margins = c(15,16))
+```
+
+## Filtering of raw count data for expressed genes across treatments and cell lines and variance stabilization of count data
+For each cell line, we keep only genes with median expression > 10 in at least one treatment or control set. We then perform library size correction and variance stabilization of count data within each cell line using the R package DESeq2.
+
+```{r, eval=FALSE}
+# Read counts data
+counts_HEPG2=t(data.frame(fread(file = '../data/RNASeq/HEPG2_RNASeq_readcount_hg19_20190108.tsv', header = T, sep = '\t'), row.names = 1))
+counts_HEPG2=counts_HEPG2[,as.character(meta_data_HEPG2$SampleID2)] 
+
+counts_SGBS=t(data.frame(fread(file = '../data/RNASeq/SGBS_RNASeq_readcount_hg19_20190108.tsv', header = T, sep = '\t'), row.names = 1))
+counts_SGBS=counts_SGBS[,as.character(meta_data_SGBS$SampleID2)] 
+
+counts_SKMC=t(data.frame(fread(file = '../data/RNASeq/SKMC_RNASeq_readcount_hg19_20190612.tsv', header = T, sep = '\t'), row.names = 1))
+counts_SKMC=counts_SKMC[,as.character(meta_data_SKMC$SampleID)] 
+colnames(counts_SKMC) = meta_data_SKMC$SampleID2
+
+# Add HEPG2 samples sequenced with SKMC to other HEPG2 samples
+if(0){
+HEPG2_inSKMC=counts_SKMC[rownames(counts_HEPG2),grep(pattern = "H",colnames(counts_SKMC))]
+id_mat=data.frame(meta_data_HEPG2[meta_data_HEPG2$SampleID %in% colnames(HEPG2_inSKMC),c("SampleID","SampleID2")], row.names = 1, stringsAsFactors = F)
+colnames(HEPG2_inSKMC)=id_mat[colnames(HEPG2_inSKMC),"SampleID2"]
+counts_HEPG2=cbind(counts_HEPG2, HEPG2_inSKMC)
+counts_HEPG2=counts_HEPG2[,as.character(meta_data_HEPG2$SampleID2)] 
+
+counts_SKMC=counts_SKMC[,-grep(pattern = "H",colnames(counts_SKMC))]
+counts_SKMC=counts_SKMC[,as.character(meta_data_SKMC$SampleID)] 
+colnames(counts_SKMC) = meta_data_SKMC$SampleID2
+}
+
+# Get HUGO gene names
+if(0){
+library("biomaRt")
+grch37 <- useMart(biomart="ENSEMBL_MART_ENSEMBL", host="grch37.ensembl.org",path="/biomart/martservice",dataset="hsapiens_gene_ensembl")
+ensemblIDs = matrix(data = unlist(strsplit(x = rownames(counts_HEPG2), split = '.', fixed = T)), ncol = 2, byrow = T)[,1]
+HGNC = getBM(attributes = c("ensembl_gene_id", "hgnc_symbol"), filters = "ensembl_gene_id", values = ensemblIDs, mart = grch37)
+ENSG = data.frame(id = 1:length(ensemblIDs),"ensembl_gene_id" = ensemblIDs)
+merged = merge(ENSG, HGNC, by = "ensembl_gene_id", all = T)
+merged=merged[!duplicated(merged$ensembl_gene_id),]
+merged = data.frame(merged[order(merged$id),c(1,3)])
+replace=merged$hgnc_symbol == "" | is.na(merged$hgnc_symbol) | duplicated(merged$hgnc_symbol)
+merged[replace, "hgnc_symbol"] = as.character(merged[replace, "ensembl_gene_id"])
+write.csv(x = merged, file = '../data/RNASeq/GeneNamesMap.csv', quote = F, row.names = F)
+}
+GeneNamesMap=read.csv(file = '../data/RNASeq/GeneNamesMap.csv', header = T, as.is = T)
+rownames(GeneNamesMap)=GeneNamesMap$ensembl_gene_id
+
+rownames(counts_HEPG2)=GeneNamesMap[matrix(data = unlist(strsplit(x = rownames(counts_HEPG2), split = '.', fixed = T)), ncol = 2, byrow = T)[,1],"hgnc_symbol"]
+rownames(counts_SGBS)=GeneNamesMap[matrix(data = unlist(strsplit(x = rownames(counts_SGBS), split = '.', fixed = T)), ncol = 2, byrow = T)[,1],"hgnc_symbol"]
+rownames(counts_SKMC)=GeneNamesMap[matrix(data = unlist(strsplit(x = rownames(counts_SKMC), split = '.', fixed = T)), ncol = 2, byrow = T)[,1],"hgnc_symbol"]
+
+# Library size correction in each cell line.
+counts_HEPG2_nzc=counts_HEPG2[apply(counts_HEPG2,1,sum)>0,]
+counts_SGBS_nzc=counts_SGBS[apply(counts_SGBS,1,sum)>0,]
+counts_SKMC_nzc=counts_SKMC[apply(counts_SKMC,1,sum)>0,]
+
+dds_HEPG2 <- DESeqDataSetFromMatrix(countData = counts_HEPG2_nzc, colData = meta_data_HEPG2, design = ~  1) 
+dds_HEPG2=estimateSizeFactors(dds_HEPG2)
+counts_HEPG2_lsc <- counts(dds_HEPG2, normalized=T)
+
+dds_SGBS <- DESeqDataSetFromMatrix(countData = counts_SGBS_nzc, colData = meta_data_SGBS, design = ~  1) 
+dds_SGBS=estimateSizeFactors(dds_SGBS)
+counts_SGBS_lsc <- counts(dds_SGBS, normalized=T)
+
+dds_SKMC <- DESeqDataSetFromMatrix(countData = counts_SKMC_nzc, colData = meta_data_SKMC, design = ~  1) 
+dds_SKMC=estimateSizeFactors(dds_SKMC)
+counts_SKMC_lsc <- counts(dds_SKMC, normalized=T)
+
+# Get mean expression per gene for each treatment in each cell line.
+medians_per_compound_HEPG2=aggregate(t(counts_HEPG2_lsc), list(meta_data_HEPG2$Treatment), median)
+colnames(medians_per_compound_HEPG2)[1]="Treatment"
+medians_for_compounds_HEPG2=medians_per_compound_HEPG2[!grepl(pattern = "CNTR", x = medians_per_compound_HEPG2$Treatment),]
+medians_for_controls_HEPG2=medians_per_compound_HEPG2[grepl(pattern = "CNTR", x = medians_per_compound_HEPG2$Treatment),]
+rownames(medians_for_compounds_HEPG2)=as.character(medians_for_compounds_HEPG2[,1])
+rownames(medians_for_controls_HEPG2)=as.character(medians_for_controls_HEPG2[,1])
+
+medians_per_compound_SGBS=aggregate(t(counts_SGBS_lsc), list(meta_data_SGBS$Treatment), median)
+colnames(medians_per_compound_SGBS)[1]="Treatment"
+medians_for_compounds_SGBS=medians_per_compound_SGBS[!grepl(pattern = "CNTR", x = medians_per_compound_SGBS$Treatment),]
+medians_for_controls_SGBS=medians_per_compound_SGBS[grepl(pattern = "CNTR", x = medians_per_compound_SGBS$Treatment),]
+rownames(medians_for_compounds_SGBS)=as.character(medians_for_compounds_SGBS[,1])
+rownames(medians_for_controls_SGBS)=as.character(medians_for_controls_SGBS[,1])
+
+SKMC=colnames(counts_SKMC_lsc)[grep(pattern = "K",colnames(counts_SKMC_lsc))]
+medians_per_compound_SKMC=aggregate(t(counts_SKMC_lsc[,SKMC]), list(meta_data_SKMC[SKMC,]$Treatment), median)
+colnames(medians_per_compound_SKMC)[1]="Treatment"
+medians_for_compounds_SKMC=medians_per_compound_SKMC[!grepl(pattern = "CNTR", x = medians_per_compound_SKMC$Treatment),]
+medians_for_controls_SKMC=medians_per_compound_SKMC[grepl(pattern = "CNTR", x = medians_per_compound_SKMC$Treatment),]
+rownames(medians_for_compounds_SKMC)=as.character(medians_for_compounds_SKMC[,1])
+rownames(medians_for_controls_SKMC)=as.character(medians_for_controls_SKMC[,1])
+
+# Keep genes with median expression > 10 in at least one treatment or control set for each cell line.
+testable_HEPG2=sapply(1:nrow(Pairs_HEPG2), function(i) medians_for_compounds_HEPG2[Pairs_HEPG2[i,2],-1]>10 | medians_for_controls_HEPG2[Pairs_HEPG2[i,1],-1]>10)
+colnames(testable_HEPG2)=Pairs_HEPG2[,2]
+rownames(testable_HEPG2)=rownames(counts_HEPG2_lsc)
+
+testable_SGBS=sapply(1:nrow(Pairs_SGBS), function(i) medians_for_compounds_SGBS[Pairs_SGBS[i,2],-1]>10 | medians_for_controls_SGBS[Pairs_SGBS[i,1],-1]>10)
+colnames(testable_SGBS)=Pairs_SGBS[,2]
+rownames(testable_SGBS)=rownames(counts_SGBS_lsc)
+
+testable_SKMC=sapply(1:nrow(Pairs_SKMC), function(i) medians_for_compounds_SKMC[Pairs_SKMC[i,2],-1]>10 | medians_for_controls_SKMC[Pairs_SKMC[i,1],-1]>10)
+colnames(testable_SKMC)=Pairs_SKMC[,2]
+rownames(testable_SKMC)=rownames(counts_SKMC_lsc)
+
+counts_testable_any_HEPG2=counts_HEPG2_nzc[apply(testable_HEPG2,1,any),]
+counts_testable_all_HEPG2=counts_HEPG2_nzc[apply(testable_HEPG2,1,all),]
+
+counts_testable_any_SGBS=counts_SGBS_nzc[apply(testable_SGBS,1,any),]
+counts_testable_all_SGBS=counts_SGBS_nzc[apply(testable_SGBS,1,all),]
+
+counts_testable_any_SKMC=counts_SKMC_nzc[apply(testable_SKMC,1,any),]
+counts_testable_all_SKMC=counts_SKMC_nzc[apply(testable_SKMC,1,all),]
+
+testable_genes=data.frame(gene_names=rownames(counts_HEPG2),
+                          testable_any_HEPG2=rownames(counts_HEPG2) %in% rownames(counts_testable_any_HEPG2),
+                          testable_all_HEPG2=rownames(counts_HEPG2) %in% rownames(counts_testable_all_HEPG2),
+                          testable_any_SGBS=rownames(counts_SGBS) %in% rownames(counts_testable_any_SGBS),
+                          testable_all_SGBS=rownames(counts_SGBS) %in% rownames(counts_testable_all_SGBS),
+                          testable_any_SKMC=rownames(counts_SKMC) %in% rownames(counts_testable_any_SKMC),
+                          testable_all_SKMC=rownames(counts_SKMC) %in% rownames(counts_testable_all_SKMC),
+                          stringsAsFactors = F)
+
+testable_genes$testable_any_any=testable_genes$testable_any_HEPG2|testable_genes$testable_any_SGBS|testable_genes$testable_any_SKMC
+testable_genes$testable_any_all=testable_genes$testable_any_HEPG2&testable_genes$testable_any_SGBS&testable_genes$testable_any_SKMC
+testable_genes$testable_all_any=testable_genes$testable_all_HEPG2|testable_genes$testable_all_SGBS|testable_genes$testable_all_SKMC
+testable_genes$testable_all_all=testable_genes$testable_all_HEPG2&testable_genes$testable_all_SGBS&testable_genes$testable_all_SKMC
+write.csv(x = testable_genes, file = '../data/RNASeq/testable_genes.csv', row.names = F, quote = F)
+
+
+# Apply library size correction and variance stabilization of count data.
+dds_testable_any_HEPG2 <- DESeqDataSetFromMatrix(countData = counts_testable_any_HEPG2, colData = meta_data_HEPG2, design = ~  1) 
+vsd_counts_testable_any_HEPG2 <- assay(varianceStabilizingTransformation(dds_testable_any_HEPG2))
+write.table(x = data.table(vsd_counts_testable_any_HEPG2,keep.rownames = T), file = '../data/RNASeq/HEPG2_RNASeq_vsd_readcount_hg19_testable_any_compounds.tsv', sep = '\t', row.names = F, col.names = T, quote = F)
+
+dds_testable_any_SGBS <- DESeqDataSetFromMatrix(countData = counts_testable_any_SGBS, colData = meta_data_SGBS, design = ~  1) 
+vsd_counts_testable_any_SGBS <- assay(varianceStabilizingTransformation(dds_testable_any_SGBS))
+write.table(x = data.table(vsd_counts_testable_any_SGBS,keep.rownames = T), file = '../data/RNASeq/SGBS_RNASeq_vsd_readcount_hg19_testable_any_compounds.tsv', sep = '\t', row.names = F, col.names = T, quote = F)
+
+dds_testable_any_SKMC <- DESeqDataSetFromMatrix(countData = counts_testable_any_SKMC, colData = meta_data_SKMC, design = ~  1) 
+vsd_counts_testable_any_SKMC <- assay(varianceStabilizingTransformation(dds_testable_any_SKMC))
+write.table(x = data.table(vsd_counts_testable_any_SKMC,keep.rownames = T), file = '../data/RNASeq/SKMC_RNASeq_vsd_readcount_hg19_testable_any_compounds.tsv', sep = '\t', row.names = F, col.names = T, quote = F)
+
+counts_testable_any_all=cbind(counts_HEPG2_nzc[testable_genes$gene_names[testable_genes$testable_any_all],],
+counts_SGBS_nzc[testable_genes$gene_names[testable_genes$testable_any_all],],
+counts_SKMC_nzc[testable_genes$gene_names[testable_genes$testable_any_all],])
+
+dds_testable_any <- DESeqDataSetFromMatrix(countData = counts_testable_any_all, colData = meta_data, design = ~  CellLine) 
+vsd_counts_testable_any <- assay(varianceStabilizingTransformation(dds_testable_any))
+write.table(x = data.table(vsd_counts_testable_any,keep.rownames = T), file = '../data/RNASeq/AllCellLines_RNASeq_vsd_readcount_hg19_testable_any_compounds.tsv', sep = '\t', row.names = F, col.names = T, quote = F)
+```
+
+```{r}
+vsd_counts_testable_any_HEPG2=data.frame(fread(file = '../data/RNASeq/HEPG2_RNASeq_vsd_readcount_hg19_testable_any_compounds.tsv', sep = '\t', header = T), stringsAsFactors = F, row.names = 1)
+vsd_counts_testable_any_HEPG2=vsd_counts_testable_any_HEPG2[,rownames(meta_data_HEPG2)]
+
+vsd_counts_testable_any_SGBS=data.frame(fread(file = '../data/RNASeq/SGBS_RNASeq_vsd_readcount_hg19_testable_any_compounds.tsv', sep = '\t', header = T), stringsAsFactors = F, row.names = 1)
+vsd_counts_testable_any_SGBS=vsd_counts_testable_any_SGBS[,rownames(meta_data_SGBS)]
+
+vsd_counts_testable_any_SKMC=data.frame(fread(file = '../data/RNASeq/SKMC_RNASeq_vsd_readcount_hg19_testable_any_compounds.tsv', sep = '\t', header = T), stringsAsFactors = F, row.names = 1)  
+vsd_counts_testable_any_SKMC=vsd_counts_testable_any_SKMC[,rownames(meta_data_SKMC)]
+
+vsd_counts_testable_any=data.frame(fread(file = '../data/RNASeq/AllCellLines_RNASeq_vsd_readcount_hg19_testable_any_compounds.tsv', sep = '\t', header = T), stringsAsFactors = F, row.names = 1)  
+vsd_counts_testable_any=vsd_counts_testable_any[,rownames(meta_data)]
+
+vsd_counts_testable=merge(x = data.table(vsd_counts_testable_any_HEPG2, keep.rownames = T), y = data.table(vsd_counts_testable_any_SGBS, keep.rownames = T), by='rn')
+
+vsd_counts_testable=data.frame(merge(x = vsd_counts_testable, y = data.table(vsd_counts_testable_any_SKMC, keep.rownames = T), by='rn'), row.names = 1)
+
+```
+
+## RNA-Sequencing QC metrics
+Summarize and plot RNA-Seq QC metrics. 
+```{r, warning=FALSE}
+variable_names=c("SampleID2","CellLine","Treatment","RIN","nr_raw_reads","prc_gc_content_avrg_r1_r2","perc_PCR_duplicates","perc_star_uniquely_mapped_reads","perc_exon_overlap_reads","perc_intron_overlap_reads","perc_transcript_overlap_reads" )
+
+temp_mat=data.frame(
+  SampleID=c(meta_data_HEPG2$OverallID,meta_data_SGBS$OverallID,meta_data_SKMC$OverallID),
+  rbind(meta_data_HEPG2[,variable_names],meta_data_SGBS[,variable_names],meta_data_SKMC[,variable_names]))
+
+temp_mat$Dstat=c(apply(cor(vsd_counts_testable_any_HEPG2),2,median),
+                 apply(cor(vsd_counts_testable_any_SGBS),2,median),
+                 apply(cor(vsd_counts_testable_any_SKMC),2,median))
+
+temp_mat_melt=melt(data = temp_mat, id.vars = c("SampleID","SampleID2","CellLine","Treatment"))
+temp_mat_melt[temp_mat_melt$variable=="nr_raw_reads","value"]=temp_mat_melt[temp_mat_melt$variable=="nr_raw_reads","value"]/1e06
+levels(temp_mat_melt$variable)=c("RIN", "Raw reads (in M)", "GC content (in %)", "PCR duplicates (in %)", "Uniquely mapped reads (in %)","Exon overlapping reads (in %)","Intron overlapping reads (in %)","Transcript overlap reads (in %)", "D statistic") 
+temp_mat_melt$CellLine = factor(temp_mat_melt$CellLine, levels = cell_order[3:1], labels=cell_labels[3:1])
+
+FigureS1 = ggplot(data = temp_mat_melt %>% group_by(CellLine, variable) %>% mutate(outlier=ifelse(test =is_outlier(value,coef = 1.5), yes = as.character(SampleID2), no = "")), 
+                  mapping = aes(x = CellLine, y=value)) + 
+  geom_boxplot(aes(fill=CellLine), outlier.size = 2) + 
+  facet_wrap(~variable, scales = "free_x", nrow = 3) + 
+  theme_bw() + 
+  theme(axis.title = element_blank(), 
+        axis.text.y = element_text(size=15, color="black"), 
+        axis.text.x = element_text(size=12, color="black"), 
+        legend.position = "none", 
+        strip.text=element_text(size=15)) + 
+  coord_flip()  + 
+    scale_fill_manual(values = cell_col[3:1]) #+   geom_text_repel(mapping = aes(label=outlier), size=3) 
+ggsave(filename = '../manuscript/SUP_FIG/RNASeq_SeqQC.png', plot = FigureS1, width = 15, height = 10)
+ggsave(filename = '~/Box Sync/IR-GxE/manuscript/Figures/FigS01_RNASeq_SeqQC.png', plot = FigureS1, width = 15, height = 10)
+```
+
+```{r, fig.height=10, fig.width=20}
+FigureS1
+```
+
+# Proportion of expression variance explained by covariates
+Compute \% of variance explained by each meta data. For each gene, we use a linear mixed model with effect of sequencing batch and machine as random (only relevant for HepG2) and the effects of all other variables as fixed effects. Starvation date, RNA extraction date, and Plate number are collinear to the treatment and should not be included. Seq batch explains .9% of expression variance (not shown). Residual variance  similar scale between two cell lines. \% PCR duplicates, \% GC content, and RIN show the largest difference in \% of variance explained. \% PCR duplicates and RIN have a larger impact on SGBS while \% GC content has larger impact on HepG2.
+
+```{r, eval=FALSE}
+library("variancePartition")
+
+meta_data_HEPG2[, c("RNA_concentration", "Conc_ng_per_ml", "RNA_260_280", "RIN", "nr_raw_reads", "prc_gc_content_avrg_r1_r2", "perc_PCR_duplicates", "perc_star_uniquely_mapped_reads", "perc_exon_overlap_reads")] = apply(meta_data_HEPG2[, c("RNA_concentration", "Conc_ng_per_ml", "RNA_260_280", "RIN", "nr_raw_reads", "prc_gc_content_avrg_r1_r2", "perc_PCR_duplicates", "perc_star_uniquely_mapped_reads", "perc_exon_overlap_reads")],2,scale)
+
+varPartMetaData_HEPG2=fitExtractVarPartModel(formula = ~ 
+                                               (1|N_cells_plated) + 
+                                               (1|Plate_number) + 
+                                               (1|Starvation_date) +
+                                               (1|Treatment_date) +
+                                               (1|Cell_collection_date) +
+                                               (1|RNA_extraction_date) + 
+                                               (1|Sequencing_batch) + 
+                                               (1|Medium) +
+                                               RNA_concentration + 
+                                               Conc_ng_per_ml + 
+                                               RNA_260_280 + 
+                                               RIN + 
+                                               nr_raw_reads + 
+                                               prc_gc_content_avrg_r1_r2 + 
+                                               perc_PCR_duplicates + 
+                                               perc_star_uniquely_mapped_reads + 
+                                               perc_exon_overlap_reads, 
+                                             exprObj = vsd_counts_testable_any_HEPG2,  
+                                             data = meta_data_HEPG2)
+write.table(x = varPartMetaData_HEPG2, file = '../results/DE/VarPart_MetaData_HEPG2.tsv', quote = F, sep = '\t', row.names = T, col.names = T)
+
+# VE by each treatment versus it's own control group after regressing out effect of variables above
+
+meta_data_SGBS[, c("RNA_concentration", "Conc_ng_per_ml", "RNA_260_280", "RIN", "nr_raw_reads", "prc_gc_content_avrg_r1_r2", "perc_PCR_duplicates", "perc_star_uniquely_mapped_reads", "perc_exon_overlap_reads")] = apply(meta_data_SGBS[, c("RNA_concentration", "Conc_ng_per_ml", "RNA_260_280", "RIN", "nr_raw_reads", "prc_gc_content_avrg_r1_r2", "perc_PCR_duplicates", "perc_star_uniquely_mapped_reads", "perc_exon_overlap_reads")],2,scale)
+
+varPartMetaData_SGBS=fitExtractVarPartModel(formula = ~ 
+                                              (1|Plate_number) + 
+                                              (1|Starvation_date) +
+                                              (1|Treatment_date) +
+                                              (1|Cell_collection_date) +
+                                              (1|RNA_extraction_date) + 
+                                              (1|Differentiation_start_date) +
+                                              (1|Medium) +
+                                              RNA_concentration + 
+                                              Conc_ng_per_ml + 
+                                              RNA_260_280 + 
+                                              RIN + 
+                                              nr_raw_reads + 
+                                              prc_gc_content_avrg_r1_r2 + 
+                                              perc_PCR_duplicates + 
+                                              perc_star_uniquely_mapped_reads + 
+                                              perc_exon_overlap_reads, 
+                                            exprObj = vsd_counts_testable_any_SGBS,  
+                                            data = meta_data_SGBS)
+write.table(x = varPartMetaData_SGBS, file = '../results/DE/VarPart_MetaData_SGBS.tsv', quote = F, sep = '\t', row.names = T, col.names = T)
+
+
+meta_data_SKMC[, c("RNA_concentration", "Conc_ng_per_ml", "RNA_260_280", "RIN", "nr_raw_reads", "prc_gc_content_avrg_r1_r2", "perc_PCR_duplicates", "perc_star_uniquely_mapped_reads", "perc_exon_overlap_reads")] = apply(meta_data_SKMC[, c("RNA_concentration", "Conc_ng_per_ml", "RNA_260_280", "RIN", "nr_raw_reads", "prc_gc_content_avrg_r1_r2", "perc_PCR_duplicates", "perc_star_uniquely_mapped_reads", "perc_exon_overlap_reads")],2,scale)
+
+varPartMetaData_SKMC=fitExtractVarPartModel(formula = ~ 
+                                              (1|Plate_number) + 
+                                              (1|Starvation_date) +
+                                              (1|Treatment_date) +
+                                              (1|Cell_collection_date) +
+                                              (1|RNA_extraction_date) + 
+                                              (1|Differentiation_start_date) +
+                                              (1|Medium) +
+                                              RNA_concentration + 
+                                              Conc_ng_per_ml + 
+                                              RNA_260_280 + 
+                                              RIN + 
+                                              nr_raw_reads + 
+                                              prc_gc_content_avrg_r1_r2 + 
+                                              perc_PCR_duplicates + 
+                                              perc_star_uniquely_mapped_reads + 
+                                              perc_exon_overlap_reads, 
+                                              exprObj = vsd_counts_testable_any_SKMC,  
+                                              data = meta_data_SKMC)
+write.table(x = varPartMetaData_SKMC, file = '../results/DE/VarPart_MetaData_SKMC.tsv', quote = F, sep = '\t', row.names = T, col.names = T)
+
+
+# Only for control samples
+varPartMetaData_HEPG2_controls=fitExtractVarPartModel(formula = ~ (1|N_cells_plated) + (1|Plate_number) + (1|Starvation_date) +
+                                                        (1|Treatment_date) + (1|Cell_collection_date) + (1|RNA_extraction_date) + 
+                                                        (1|Sequencing_batch) +  RNA_concentration + Conc_ng_per_ml + 
+                                                        RNA_260_280 +  RIN +  nr_raw_reads +  prc_gc_content_avrg_r1_r2 + 
+                                                        perc_PCR_duplicates + perc_star_uniquely_mapped_reads + perc_exon_overlap_reads, 
+       exprObj = vsd_counts_testable_any_HEPG2[,meta_data_HEPG2$SampleID2[grep(pattern = "CONTR", meta_data_HEPG2$Treatment_Long)]],  
+      data = meta_data_HEPG2[grep(pattern = "CONTR", meta_data_HEPG2$Treatment_Long),])
+write.table(x = varPartMetaData_HEPG2_controls, file = '../results/DE/VarPart_MetaData_HEPG2_controls.tsv', quote = F, sep = '\t', row.names = T, col.names = T)
+
+varPartMetaData_SGBS_controls=fitExtractVarPartModel(formula = ~  (1|Plate_number) +  (1|Starvation_date) + (1|Treatment_date) +
+                                              (1|Cell_collection_date) + (1|RNA_extraction_date) +  (1|Differentiation_start_date) +
+                                                RNA_concentration +  Conc_ng_per_ml +  RNA_260_280 +  RIN + 
+                                                nr_raw_reads +  prc_gc_content_avrg_r1_r2 +  perc_PCR_duplicates + 
+                                                perc_star_uniquely_mapped_reads +  perc_exon_overlap_reads, 
+    exprObj = vsd_counts_testable_any_SGBS[,meta_data_SGBS$SampleID2[grep(pattern = "CONTR", meta_data_SGBS$Treatment_Long)]],  
+    data = meta_data_SGBS[grep(pattern = "CONTR", meta_data_SGBS$Treatment_Long),])
+write.table(x = varPartMetaData_SGBS_controls, file = '../results/DE/VarPart_MetaData_SGBS_controls.tsv', quote = F, sep = '\t', row.names = T, col.names = T)
+
+varPartMetaData_SKMC_controls=fitExtractVarPartModel(formula = ~  (1|Plate_number) +  (1|Starvation_date) + (1|Treatment_date) +
+                                              (1|Cell_collection_date) + (1|RNA_extraction_date) +  (1|Differentiation_start_date) +
+                                                RNA_concentration +  Conc_ng_per_ml +  RNA_260_280 +  RIN + 
+                                                nr_raw_reads +  perc_PCR_duplicates + 
+                                                perc_star_uniquely_mapped_reads +  perc_exon_overlap_reads, 
+    exprObj = vsd_counts_testable_any_SKMC[,meta_data_SKMC$SampleID2[grep(pattern = "CONTR", meta_data_SKMC$Treatment_Long)]],  
+    data = meta_data_SKMC[grep(pattern = "CONTR", meta_data_SKMC$Treatment_Long),])
+write.table(x = varPartMetaData_SKMC_controls, file = '../results/DE/VarPart_MetaData_SKMC_controls.tsv', quote = F, sep = '\t', row.names = T, col.names = T)
+
+```
+
+
+```{r, warning=F}
+varPartMetaData_HEPG2=read.table(file = '../results/DE/VarPart_MetaData_HEPG2.tsv', sep = '\t', header = T)
+varPartMetaData_SGBS=read.table(file = '../results/DE/VarPart_MetaData_SGBS.tsv', sep = '\t', header = T)
+varPartMetaData_SKMC=read.table(file = '../results/DE/VarPart_MetaData_SKMC.tsv', sep = '\t', header = T)
+
+varPartMetaData_HEPG2$Differentiation_start_date = NA
+varPartMetaData_SGBS$N_cells_plated = NA 
+varPartMetaData_SKMC$N_cells_plated = NA
+varPartMetaData_SGBS$Sequencing_batch = NA 
+varPartMetaData_SKMC$Sequencing_batch = NA
+
+varPartMetaData=rbindCommonCols(x = data.frame(cell="HEPG2",varPartMetaData_HEPG2),
+                                rbindCommonCols(x = data.frame(cell="SGBS",varPartMetaData_SGBS),
+                                data.frame(cell="HMCL-7304",varPartMetaData_SKMC)))
+
+colnames(varPartMetaData)[-1]=c("Cell collection date", "Medium", "N cells plated" , "Plate number", "RNA extraction date",  "Sequencing batch", "Starvation date", "Treatment date", "RNA concentration","RNA conc NovoSeq", "RNA 260/280", "RIN", "Raw reads", "% GC content", "% PCR duplicates", "% Uniquely mapped", "% Exonic reads",  "Residuals", "Differentiation date")
+
+varPartMetaData_m=melt(data.table(varPartMetaData, keep.rownames = T), id.vars = c("rn","cell"))
+varPartMetaData_m$variable=factor(varPartMetaData_m$variable, levels= c( "Medium", "N cells plated" , "Cell collection date", "Differentiation date", "Plate number", "RNA extraction date",  "Sequencing batch", "Starvation date", "Treatment date", "RNA concentration","RNA conc NovoSeq", "RNA 260/280", "RIN", "Raw reads", "% GC content", "% PCR duplicates", "% Uniquely mapped", "% Exonic reads",  "Residuals"))
+
+vars2plot=c("Sequencing batch", "RNA concentration", "RNA 260/280", "RIN", "Raw reads", "% GC content", "% PCR duplicates", "% Uniquely mapped", "% Exonic reads", "Residuals")
+
+means_medians= merge(x = varPartMetaData_m %>% group_by(cell,variable) %>% summarise(med_ve=median(value)),
+  y=varPartMetaData_m %>% group_by(cell,variable) %>% summarise(mean_ve=mean(value)), by=c("cell","variable"))
+
+p_VarPart_meta = 
+  ggplot(data=varPartMetaData_m %>% filter(!variable %in% "RNA conc NovoSeq"), aes(x=variable , y=100*value, fill=factor(cell, levels = cell_order, labels = cell_labels))) +
+  scale_fill_manual(values = cell_col) +
+  geom_violin(scale="width") + 
+  geom_boxplot(width=0.07, outlier.colour='black') +
+  facet_wrap(~factor(cell, levels = cell_order, labels = cell_labels)) + 
+  coord_flip() + 
+  theme_bw() + 
+  theme(axis.title.x = element_text(size=30),
+        axis.title.y = element_blank(), 
+        axis.text.x = element_text(size=20, color = "black", angle = 90, vjust = .5, hjust = 1), 
+        axis.text.y = element_text(size=20, color = "black"), 
+        strip.text = element_text(size=30),
+        legend.position = "none") + 
+  ylab("Expression variance explained (in %)") + 
+  geom_text(data = means_medians %>% filter(!variable %in% "RNA conc NovoSeq"), mapping = aes(x = variable, y = 108, label=gsub(pattern = "NA",replacement = "", x = format(x = 100*mean_ve, digits = 2))), size=6) + 
+  scale_y_continuous(limits=c(0,115),breaks = c(0,25,50,75,100))
+
+ggsave(filename = '../manuscript/SUP_FIG/RNASeq_VarPartMeta.png', plot = p_VarPart_meta, width = 15, height = 10)
+ggsave(filename = '~/Box Sync/IR-GxE/manuscript/Figures/FigS02_RNASeq_VarPartMeta.png', plot = p_VarPart_meta, width = 15, height = 10)
+```
+
+
+```{r, fig.height=8, fig.width=20, warning=F}
+p_VarPart_meta
+```
+
+```{r, warning=F, eval=FALSE}
+varPartMetaData_HEPG2=read.table(file = '../results/DE/VarPart_MetaData_HEPG2_controls.tsv', sep = '\t', header = T)
+varPartMetaData_SGBS=read.table(file = '../results/DE/VarPart_MetaData_SGBS_controls.tsv', sep = '\t', header = T)
+varPartMetaData_SKMC=read.table(file = '../results/DE/VarPart_MetaData_SKMC_controls.tsv', sep = '\t', header = T)
+
+varPartMetaData_HEPG2$Differentiation_start_date = NA
+varPartMetaData_SGBS$N_cells_plated = NA 
+varPartMetaData_SKMC$N_cells_plated = NA
+varPartMetaData_SGBS$Sequencing_batch = NA 
+varPartMetaData_SKMC$Sequencing_batch = NA
+varPartMetaData_SKMC$prc_gc_content_avrg_r1_r2=NA
+
+varPartMetaData=rbindCommonCols(x = data.frame(cell="HepG2",varPartMetaData_HEPG2),
+                                rbindCommonCols(x = data.frame(cell="SGBS",varPartMetaData_SGBS),
+                                data.frame(cell="HMCL-7304",varPartMetaData_SKMC)))
+
+colnames(varPartMetaData)[-1]=c("Cell collection date", "N cells plated" , "Plate number", "RNA extraction date",  "Sequencing batch", "Starvation date", "Treatment date", "RNA concentration","RNA conc NovoSeq", "RNA 260/280", "RIN", "Raw reads", "% GC content", "% PCR duplicates", "% Uniquely mapped", "% Exonic reads",  "Residuals", "Differentiation date")
+
+varPartMetaData_m=melt(data.table(varPartMetaData, keep.rownames = T), id.vars = c("rn","cell"))
+varPartMetaData_m$variable=factor(varPartMetaData_m$variable, levels= c("N cells plated" , "Cell collection date", "Differentiation date", "Plate number", "RNA extraction date",  "Sequencing batch", "Starvation date", "Treatment date", "RNA concentration","RNA conc NovoSeq", "RNA 260/280", "RIN", "Raw reads", "% GC content", "% PCR duplicates", "% Uniquely mapped", "% Exonic reads",  "Residuals"))
+  
+means_medians= merge(x = varPartMetaData_m %>% group_by(cell,variable) %>% summarise(med_ve=median(value)),
+  y=varPartMetaData_m %>% group_by(cell,variable) %>% summarise(mean_ve=mean(value)), by=c("cell","variable"))
+
+p_VarPart_meta = 
+  ggplot(data=varPartMetaData_m, aes(x=variable, y=100*value)) +
+  geom_violin(scale="width") + 
+    geom_boxplot(width=0.07, fill="grey", outlier.colour='black') +
+    facet_wrap(~cell) + 
+    coord_flip() + 
+    theme_bw() + 
+    theme(axis.title.x = element_text(size=30),
+          axis.title.y = element_blank(), 
+          axis.text.x = element_text(size=20, color = "black", angle = 90, vjust = .5, hjust = 1), 
+          axis.text.y = element_text(size=20, color = "black"), strip.text = element_text(size=30)) + 
+    ylab("% Expression var explained ") + ylim(c(0,110)) + 
+    geom_text(data = means_medians, mapping = aes(x = variable, y = 107, label=round(x = 100*mean_ve, digits=2)), size=7)
+  ggsave(filename = '~/Desktop/RNASeq_VarPartMeta.png', plot = p_VarPart_meta, width = 20, height = 7.5)
+  ```
+
+```{r, fig.height=8, fig.width=20, warning=F, eval=FALSE}
+p_VarPart_meta
+```
+
+
+## Principal Component Analysis (PCA) 
+We applied PCA **within** and **across** each cell line before and after correcting for background noise. To correct for background noise within cell lines, we regress out the effect of glucose treated or glucose control stauts, sequencing machine (only HepG2), as well as major factors of expression variability. To correct for background noise across cell lines, we also regress out the effect of cell line, cell line x glucose, and sequencing machine.
+
+Glucose and glucose controls were treated with a different medium for HepG2 cell lines compared to SGBS. This is why they are so far from all the other samples in HepG2 but not SGBS. Sample B_17_02 seems to be an outlier for PC1. Same sample has the lowest D-Statistic (though still pretty high) with all other SGBS samples. This might make the comparison of treatments ("ADIP" "LEPT" "SB20" "SP60" "U012" "WORT" "RETA") with this group of control problematic. \textcolor{red}{To asses robustness to outliers, analysese might have to be repeated without this sample.}
+
+<!-- PCA across all cell lines BEFORE background noise correction -->
+```{r, eval=FALSE}
+pca_both=prcomp(x = t(vsd_counts_testable_any), center = T, scale. = T)
+pca_all_both=data.table(pca_both$x[,c("PC1","PC2")],keep.rownames = T)
+pca_all_both$treatment=meta_data[pca_all_both$rn,"Treatment"]
+pca_all_both$id=unlist(apply(meta_data[pca_all_both$rn,c("Treatment", "Replicate")],1,paste, collapse="_"))
+pca_all_both$cell=factor(meta_data[pca_all_both$rn,"CellLine"], levels = cell_order, labels = cell_labels)
+
+pca_all_both = pca_all_both %>% 
+  mutate(glucose=factor(ifelse(test = grepl(pattern = "CNTR_G|GLUC",x = treatment) , yes = "Glucose", no = "Non-Glucose"), levels=c("Non-Glucose","Glucose"), labels=c("DMEM, no glucose", "Empty EMEM")))  %>% mutate(outlier = ifelse(test = is_outlier(PC1, coef = 4) | is_outlier(PC2, coef = 4), yes = rn, no = "")) 
+
+p_PC1vsPC2 = ggplot(data = pca_all_both, mapping = aes(x = PC1, y = PC2, color=cell, shape = glucose)) + 
+  geom_point(size=5) + 
+  scale_color_manual(values = cell_col) + 
+  theme_bw() + 
+  theme(legend.position = c(.3,.75), 
+        legend.text = element_text(size = 30), 
+        legend.title = element_blank(), 
+        legend.background = element_blank(), 
+        legend.box.background = element_blank(), 
+        axis.title = element_text(size = 30),
+        axis.text = element_text(size = 20), 
+        strip.text = element_text(size=30)) + 
+  guides(shape=guide_legend(title=NULL, ncol = 1, override.aes = list(size=5)),
+         color=guide_legend(title=NULL, ncol = 1, override.aes = list(size=5))) +
+  xlab(label = paste0(paste0("PC1 (",round(100*summary(pca_both)$importance[2,1]), "% of var expl.)"))) + 
+  ylab(label = paste0(paste0("PC2 (",round(100*summary(pca_both)$importance[2,2]), "% of var expl.)"))) + 
+  facet_wrap(~factor("All cell lines"))
+```
+
+<!-- PCA across cell lines AFTER background noise correction -->
+```{r,eval=FALSE}
+count_resid=residuals(lm(t(vsd_counts_testable_any) ~ prc_gc_content_avrg_r1_r2 + perc_exon_overlap_reads + RNA_concentration + Conc_ng_per_ml + perc_PCR_duplicates + RNA_260_280 + RIN + perc_star_uniquely_mapped_reads + grepl(pattern = "CNTR_G|GLUC", x = Treatment) + Machine + CellLine + grepl(pattern = "CNTR_G|GLUC", x = Treatment):CellLine, data = meta_data))
+
+pca_both_res=prcomp(x = count_resid, center = T, scale. = T)
+pca_all_both_res=data.table(pca_both_res$x[,c("PC1","PC2")],keep.rownames = T)
+pca_all_both_res$treatment=meta_data[pca_all_both_res$rn,"Treatment"]
+pca_all_both_res$id=unlist(apply(meta_data[pca_all_both_res$rn,c("Treatment", "Replicate")],1,paste, collapse="_"))
+pca_all_both_res$cell=factor(meta_data[pca_all_both_res$rn,"CellLine"], levels = cell_order, labels = cell_labels)
+
+pca_all_both_res = pca_all_both_res %>% 
+  mutate(glucose=factor(ifelse(test = grepl(pattern = "CNTR_G|GLUC",x = treatment) , yes = "Glucose", no = "Non-Glucose"), levels=c("Non-Glucose","Glucose")))  %>% 
+  mutate(outlier = ifelse(test = is_outlier(PC1, coef = 3) | is_outlier(PC2, coef = 3), yes = rn, no = "")) 
+
+p_PC1vsPC2_res = ggplot(data = pca_all_both_res, mapping = aes(x = PC1, y = PC2, color=cell, shape = glucose)) + 
+  geom_text_repel(aes(label=outlier)) +
+  geom_point(size=5) + 
+  scale_color_manual(values =  cell_col) + 
+  theme_bw() + 
+  theme(legend.position = "none", 
+        legend.text = element_text(size = 20), 
+        legend.title = element_blank(), 
+        legend.background = element_blank(), 
+        legend.box.background = element_blank(), 
+        strip.text = element_text(size=30), 
+        axis.title = element_text(size = 30), 
+        axis.text = element_text(size = 20))+ 
+  guides(color=guide_legend(title=NULL), 
+         shape=guide_legend(title=NULL, ncol = 1)) + 
+  xlab(label = paste0(paste0("PC1 (",round(100*summary(pca_both_res)$importance[2,1]), "% of var expl.)"))) + 
+  ylab(label = paste0(paste0("PC2 (",round(100*summary(pca_both_res)$importance[2,2]), "% of var expl.)"))) + 
+  facet_wrap(~factor("All cell lines - Adjusted for background noise"))
+```
+
+
+<!-- PCA within cell lines BEFORE background noise correction -->
+```{r}
+pca_HEPG2=prcomp(x = t(vsd_counts_testable_any_HEPG2), center = T, scale. = T)
+pca_SGBS=prcomp(x = t(vsd_counts_testable_any_SGBS), center = T, scale. = T)
+pca_SKMC=prcomp(x = t(vsd_counts_testable_any_SKMC), center = T, scale. = T)
+
+pca_all=rbind(data.table(pca_HEPG2$x[,1:2], keep.rownames = T),
+              data.table(pca_SGBS$x[,1:2], keep.rownames = T),
+              data.table(pca_SKMC$x[,1:2], keep.rownames = T))
+pca_all$treatment=meta_data[pca_all$rn,"Treatment"]
+
+pca_all$id=unlist(apply(meta_data[pca_all$rn,c("Treatment", "Replicate")],1,paste, collapse="_"))
+
+pca_all$cell=factor(x = c(rep("HEPG2",nrow(pca_HEPG2$x)),rep("SGBS",nrow(pca_SGBS$x)), rep("HMCL-7304",nrow(pca_SKMC$x))), levels = cell_order, labels = cell_labels)
+
+pca_all$correction=factor(x = "Raw", levels = c("Raw", "Corrected"))
+
+pca_all = pca_all %>% group_by(cell) %>%
+  mutate(outlier=ifelse(test = is_outlier(PC1, coef = 3)|is_outlier(PC2, coef = 3) , yes = paste(as.character(treatment),as.character(rn)), no = ""))  %>% 
+  mutate(newHepG2=ifelse(test = rn %in% meta_data[meta_data$CellLine=="HEPG2" & meta_data$Machine=="NovaSeq", "SampleID2"], yes = "New HepG2", no = "")) %>% 
+  mutate(glucose=factor(ifelse(test = grepl(pattern = "CNTR_G|GLUC",x = treatment) , 
+                               yes = "Glucose Medium", 
+                               no = "Non-Glucose Medium"), 
+                        levels=c("Non-Glucose Medium","Glucose Medium")))  %>% 
+  ungroup() 
+
+```
+
+
+<!-- PCA within each cell line AFTER background noise correction -->
+```{r}
+count_resid_HEPG2=residuals(lm(t(vsd_counts_testable_any_HEPG2) ~ prc_gc_content_avrg_r1_r2 + grepl(pattern = "CNTR_G|GLUC", x = Treatment) + perc_exon_overlap_reads + scale(RNA_concentration) + scale(Conc_ng_per_ml)+ perc_PCR_duplicates + scale(RNA_260_280) + scale(RIN) + perc_star_uniquely_mapped_reads, data = meta_data_HEPG2))
+
+count_resid_SGBS=residuals(lm(t(vsd_counts_testable_any_SGBS) ~ prc_gc_content_avrg_r1_r2 + grepl(pattern = "CNTR_G|GLUC", x = Treatment) + perc_exon_overlap_reads + scale(RNA_concentration)  + scale(Conc_ng_per_ml) + perc_PCR_duplicates + scale(RNA_260_280) + scale(RIN) + perc_star_uniquely_mapped_reads , data = meta_data_SGBS))
+
+count_resid_SKMC=residuals(lm(t(vsd_counts_testable_any_SKMC) ~ prc_gc_content_avrg_r1_r2 + grepl(pattern = "CNTR_G|GLUC", x = Treatment) + perc_exon_overlap_reads + scale(RNA_concentration)  + scale(Conc_ng_per_ml) + perc_PCR_duplicates + scale(RNA_260_280) + scale(RIN) + perc_star_uniquely_mapped_reads , data = meta_data_SKMC))
+
+pca_HEPG2_res=prcomp(x = count_resid_HEPG2, center = T, scale. = T)
+pca_SGBS_res=prcomp(x = count_resid_SGBS, center = T, scale. = T)
+pca_SKMC_res=prcomp(x = count_resid_SKMC, center = T, scale. = T)
+
+
+pca_all_res=rbind(data.table(pca_HEPG2_res$x[,1:2], keep.rownames = T),
+              data.table(pca_SGBS_res$x[,1:2], keep.rownames = T),
+              data.table(pca_SKMC_res$x[,1:2], keep.rownames = T))
+pca_all_res$treatment=meta_data[pca_all_res$rn,"Treatment"]
+
+pca_all_res$id=unlist(apply(meta_data[pca_all_res$rn,c("Treatment", "Replicate")],1,paste, collapse="_"))
+
+
+pca_all_res$cell=factor(x = c(rep("HEPG2",nrow(pca_HEPG2_res$x)),rep("SGBS",nrow(pca_SGBS_res$x)), rep("HMCL-7304",nrow(pca_SKMC_res$x))), levels = cell_order, labels = cell_labels)
+
+pca_all_res$correction=factor(x = "Corrected", levels = c("Raw", "Corrected"))
+
+pca_all_res = pca_all_res %>% group_by(cell) %>%
+  mutate(outlier=ifelse(test = is_outlier(PC1, coef = 3)|is_outlier(PC2, coef = 3) , yes = as.character(treatment), no = ""))  %>% 
+  mutate(newHepG2=ifelse(test = rn %in% meta_data[meta_data$CellLine=="HEPG2" & meta_data$Machine=="NovaSeq", "SampleID2"], yes = "New HepG2", no = "")) %>% 
+mutate(glucose=factor(ifelse(test = grepl(pattern = "CNTR_G|GLUC",x = treatment) , yes = "Glucose Medium", no = "Non-Glucose Medium"), levels=c("Non-Glucose Medium","Glucose Medium")))  %>% 
+    ungroup() 
+
+
+```
+
+```{r, fig.height=20, fig.width=20}
+pca_res=rbind(pca_all,pca_all_res)
+
+FigureS3=ggplot(data = pca_res, mapping = aes(x = PC1, y = PC2, color=cell, shape=glucose)) + 
+  geom_point(size=5) + 
+  # geom_text_repel(mapping = aes(label=outlier))+
+  facet_grid(correction~cell) + 
+  theme_bw() + 
+  theme(legend.position = "none", 
+        legend.text = element_text(size = 18), 
+        legend.title = element_blank(), 
+        axis.title = element_text(size = 30), 
+        axis.text = element_text(size = 20), 
+        strip.text = element_text(size = 30)) + 
+  guides(color=guide_legend(title=NULL, nrow = 1, byrow = T, override.aes = list(size=5))) + 
+  scale_color_manual(values = cell_col) 
+
+ggsave(filename = '~/Box Sync/IR-GxE/manuscript/Figures/FigS03_RNASeq_PCA.png', plot = FigureS3, width = 15, height = 10)
+
+FigureS3
+```
+
+
+<!-- Correlation of HepG2 PCs and technical covariates. The first PC is clearly (and mainly) the medium difference for glucose-related samples.  -->
+<!-- ```{r, fig.height=8, fig.width=20} -->
+<!-- ggcorrplot(corr = cor(cbind(GluMed=meta_data_HEPG2$Treatment %in% c("CNTR_G", "GLUC")*1,model.matrix(object = ~Plate_number + Sequencing_batch + RNA_concentration + RNA_260_280 + Conc_ng_per_ml + RIN, data=meta_data_HEPG2)[,-1], scale(meta_data_HEPG2[-c(1:29)])), pca_HEPG2$x[rownames(meta_data_HEPG2),1:20], use = "pairwise.complete.obs")) + theme(axis.text.x = element_text(angle=90, vjust = .5)) -->
+<!-- ``` -->
+
+<!-- Correlation of SGBS PCs and technical covariates. The first PC is moderately correlated (\rho=-0.67) with the medium difference for glucose-related samples. PC1 is also highly correlated (\rho=-0.87) with plate number 8. Plate 8 contains the glucose and glucose-related samples so this could still be due to the medium difference for glucose-related samples. Last, PC1 is moderately correlated with RIN (\rho=-0.57). B_17_02 could be an outlier for PC1 because it has the second lowest (but still pretty high) RIN score (8.4) compared to all other SGBS samples.  -->
+
+<!-- ```{r, fig.height=8, fig.width=20} -->
+<!-- ggcorrplot(corr = cor(x = cbind(GluMed=meta_data_SGBS$Treatment %in% c("CNTR_G", "GLUC")*1, model.matrix(object = ~Plate_number + RNA_concentration + RNA_260_280 + Conc_ng_per_ml + RIN, data=meta_data_SGBS)[,-1], scale(meta_data_SGBS[-c(1:29)])), y = pca_SGBS$x[,1:20], use = "pairwise.complete.obs")) + theme(axis.text.x = element_text(angle=90, vjust = .5)) -->
+<!-- ``` -->
+
+

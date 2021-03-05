@@ -1,0 +1,411 @@
+---
+title: "Summary of colocalization analyses results"
+author: "Brunilda Balliu"
+date: "12/20/2019"
+output: html_document
+---
+
+```{r, echo=F, include=F, eval=TRUE, message=FALSE, warning=F}
+library(ggplot2)
+library(data.table)
+library(dplyr)
+library(knitr)
+library(reshape2)
+library(tidyr)
+library(magrittr)
+
+
+source(file = '00_MoMeIR_Functions.R')
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Parameters
+# Perturbation and cell order and colors
+perturb_order=c("GLUC", "INSU", "IGF1", "SB20", "SP60", "U012", "WORT", "IL-6", "TGFB1", "TNFa", "DEXA", "ADIP", "LEPT", "ATOR", "ROSI", "METF", "DECA", "LAUR", "RETA", "IBMX", "ISOP")
+cell_order=c("HMCL-7304", "SGBS", "HEPG2")
+cell_labels=c("Muscle", "Fat", "Liver")
+cell_col=c("#E69F00","#999999","#56B4E9")
+save_plots=F
+
+# Read coloc results
+coloc_res=fread(file = '~/Box Sync/IR-coloc/analysis/coloc-2020-05-11-v2/eqtls_and_sqtls/clpp_results_categorized_2020-05-11.txt', sep = '\t', header = T, check.names = F, stringsAsFactors = F) %>% 
+  select(locus, chr, pos, rsid, feature, ensembl, hgnc, gwas_short, eqtl_short, clpp, clpp_mod, n_snps, step1, step2, step3, pancreas)
+
+# Keep only eQTL results
+coloc_res %<>% filter(grepl(pattern = "eQTL", x = eqtl_short))
+
+# Add Ensemble ID if HUGO name missing
+coloc_res$hgnc[is.na(coloc_res$hgnc)]=coloc_res$ensembl[is.na(coloc_res$hgnc)]
+coloc_res$hgnc[coloc_res$hgnc==""]=coloc_res$ensembl[coloc_res$hgnc==""]
+
+# Order coloc results by locus
+coloc_res %<>% arrange(locus, rsid, hgnc, gwas_short,eqtl_short)
+
+coloc_res$step1=factor(coloc_res$step1)
+coloc_res$step2=factor(coloc_res$step2)
+coloc_res$step3=factor(coloc_res$step3)
+
+### Filter coloc results for loci with at least one significantly colocalized gene  
+coloc_res_sig=coloc_res[coloc_res$step1 %in% c("loci_0.1","loci_2","loci_3"),]
+
+### Load and process perturbation results
+results_all_pairs=fread(file = '../results/DE/DE_sum_stat_all_treatments_cells.tsv', sep = '\t', header  = T)
+results_all_pairs$cell[results_all_pairs$cell == "SKMC"] = "HMCL-7304"
+results_all_pairs$cell = factor(x = results_all_pairs$cell, levels = cell_order, labels = cell_labels)
+results_all_pairs$Treatment = factor(results_all_pairs$Treatment, levels = perturb_order)
+results_all_pairs %<>% mutate(DE_dir=sign(log2FoldChange)) %>% mutate(DE_dir=ifelse(test = sig5FDR_hFDR3,yes = DE_dir,no = 0))
+```
+
+### Combine coloc and DE results
+ <!-- Number of DE perturbations per coloc genes -->
+```{r, echo=F, include=T, eval=T, message=F, warning=F, fig.height=5, fig.width=15}
+results_all_pairs %>% 
+  filter(geneID %in% unique(coloc_res_sig$hgnc)) %>% 
+  group_by(geneID,cell) %>% 
+  summarise(n_DE_perturb=sum(sig5FDR_hFDR3)) %>% 
+  ggplot(mapping = aes(x=n_DE_perturb, fill=cell)) + 
+  geom_bar(position = position_dodge()) + 
+  scale_x_continuous(breaks = seq(0,15,1)) + 
+  scale_fill_manual(values = cell_col,drop=FALSE) +
+  theme_bw() + 
+  theme(legend.title = element_blank(),
+        legend.position = "top",
+        legend.text = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size=20),
+        axis.text.x = element_text(size=15)) + 
+  xlab("Nr DE perturb per gene with coloc results")
+
+# Nunber of DE perturbations per strongly coloc gene
+results_all_pairs %>% 
+  filter(geneID %in% unique(coloc_res[coloc_res$clpp_mod>=.4,hgnc])) %>% 
+  group_by(geneID,cell) %>% 
+  summarise(n_DE_perturb=sum(sig5FDR_hFDR3)) %>% 
+  ggplot(mapping = aes(x=n_DE_perturb, fill=cell)) + 
+  geom_bar(position = position_dodge()) + 
+  scale_x_continuous(breaks = seq(0,15,1)) + 
+  scale_fill_manual(values = cell_col,drop=FALSE) +
+  theme_bw() + 
+  theme(legend.title = element_blank(),
+        legend.position = "top",
+        legend.text = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size=20),
+        axis.text.x = element_text(size=15)) + 
+  xlab("Nr DE perturb per strongly coloc genes (CLPP>.4)")
+```
+
+Number of DE genes with significant coloc per perturbation / tissue
+```{r, echo=F, include=F, eval=T, message=F, warning=F, fig.height=5, fig.width=15}
+coloc_res_fat_SQ=coloc_res %>% filter(eqtl_short %in% c("Subcutaneous-Adipose-eQTL")) %>% group_by(hgnc) %>% summarize(clpp_mod=max(clpp_mod))
+coloc_DE_res_fat_SQ=merge(x=coloc_res_fat_SQ, y= results_all_pairs %>% filter(cell=="Fat" & geneID %in% coloc_res_fat_SQ$hgnc) %>% select(Treatment,geneID,sig5FDR_hFDR3) %>% mutate(sig5FDR_hFDR3=1*sig5FDR_hFDR3), by.x="hgnc", by.y="geneID") %>% mutate(cell="Fat SQ")
+
+coloc_res_fat_Vis=coloc_res %>% filter(eqtl_short %in% c("Visceral-Adipose-eQTL")) %>% group_by(hgnc) %>% summarize(clpp_mod=max(clpp_mod))
+coloc_DE_res_fat_Vis=merge(x=coloc_res_fat_Vis, y= results_all_pairs %>% filter(cell=="Fat" & geneID %in% coloc_res_fat_Vis$hgnc) %>% select(Treatment,geneID,sig5FDR_hFDR3) %>% mutate(sig5FDR_hFDR3=1*sig5FDR_hFDR3), by.x="hgnc", by.y="geneID") %>% mutate(cell="Fat Visc")
+
+coloc_res_muscle=coloc_res %>% filter(eqtl_short %in% c("Skeletal-Muscle-eQTL")) %>% group_by(hgnc) %>% summarize(clpp_mod=max(clpp_mod))
+coloc_DE_res_muscle=merge(x=coloc_res_muscle, y= results_all_pairs %>% filter(cell=="Muscle" & geneID %in% coloc_res_muscle$hgnc) %>% select(Treatment,geneID,sig5FDR_hFDR3) %>% mutate(sig5FDR_hFDR3=1*sig5FDR_hFDR3), by.x="hgnc", by.y="geneID") %>% mutate(cell="Muscle")
+
+coloc_res_liver=coloc_res %>% filter(eqtl_short %in% c("Liver-eQTL")) %>% group_by(hgnc) %>% summarize(clpp_mod=max(clpp_mod))
+coloc_DE_res_liver=merge(x=coloc_res_liver, y= results_all_pairs %>% filter(cell=="Liver" & geneID %in% coloc_res_liver$hgnc) %>% select(Treatment,geneID,sig5FDR_hFDR3) %>% mutate(sig5FDR_hFDR3=1*sig5FDR_hFDR3), by.x="hgnc", by.y="geneID") %>% mutate(cell="Liver")
+
+coloc_DE_res = rbind(coloc_DE_res_fat_SQ,coloc_DE_res_fat_Vis,coloc_DE_res_muscle,coloc_DE_res_liver) %>% mutate(cell=factor(x = cell,levels = c("Muscle","Fat SQ","Fat Visc","Liver")), Treatment= factor(x = Treatment,levels = perturb_order), sig_coloc=1*(clpp_mod >=.25))
+
+OR_Pval_DEvsCLPP = OR_Pval_CLPPvsDE = NULL
+for(perturb in levels(coloc_DE_res$Treatment)){
+  for(coloc_cell in levels(coloc_DE_res$cell)) {
+    
+    tmp_data=coloc_DE_res %>% filter(Treatment == perturb & cell==coloc_cell)
+    myglm=glm(sig5FDR_hFDR3 ~ clpp_mod, family='binomial', data=tmp_data)
+    
+    if(myglm$converged & (!is.na(coef(myglm)[2])) & (sum(tmp_data$sig5FDR_hFDR3)>10)){
+      OR_Pval_DEvsCLPP=rbind(OR_Pval_DEvsCLPP, 
+                    data.frame(Cell=coloc_cell, Treatment=perturb, 
+                               OR=exp(summary(myglm)$coefficients[2,'Estimate']), 
+                               OR_LB=exp(summary(myglm)$coefficients[2,'Estimate'] + qnorm(0.025) * summary(myglm)$coefficients[2,'Std. Error']),
+                               OR_UB=exp(summary(myglm)$coefficients[2,'Estimate'] + qnorm(0.975) * summary(myglm)$coefficients[2,'Std. Error']),
+                               P=summary(myglm)$coefficients[2,'Pr(>|z|)']))
+    }
+    
+    myglm=glm(sig_coloc ~ sig5FDR_hFDR3, family='binomial', data=tmp_data)
+    if(myglm$converged & (!is.na(coef(myglm)[2]))& (sum(tmp_data$sig5FDR_hFDR3)>10)){
+      OR_Pval_CLPPvsDE=rbind(OR_Pval_CLPPvsDE, 
+                    data.frame(Cell=coloc_cell, Treatment=perturb, 
+                               OR=exp(summary(myglm)$coefficients[2,'Estimate']), 
+                               OR_LB=exp(summary(myglm)$coefficients[2,'Estimate'] + qnorm(0.025) * summary(myglm)$coefficients[2,'Std. Error']),
+                               OR_UB=exp(summary(myglm)$coefficients[2,'Estimate'] + qnorm(0.975) * summary(myglm)$coefficients[2,'Std. Error']),
+                               P=summary(myglm)$coefficients[2,'Pr(>|z|)']))
+    }
+    
+    
+  }}
+
+OR_Pval_DEvsCLPP %<>% group_by(Cell) %>% mutate(BHP=p.adjust(p = P,method = "BH"))
+OR_Pval_CLPPvsDE %<>% group_by(Cell) %>% mutate(BHP=p.adjust(p = P,method = "BH"))
+
+ggplot(data = OR_Pval_DEvsCLPP %>% filter(P<.05), 
+       aes(x=Treatment, y = OR, color=Cell,shape=BHP<=.1)) + 
+  geom_errorbar(aes(ymin=OR_LB, ymax=OR_UB), width=.1, position=position_dodge(.5)) +
+  geom_point(size=4,position=position_dodge(.5)) + 
+  geom_hline(yintercept = 1, linetype="dashed") + 
+  theme_bw() + 
+  theme(legend.position = "top",
+        legend.title = element_text(size=20),
+        legend.text = element_text(size=15), 
+        legend.background = element_blank(),
+        axis.title = element_text(size=20),
+        axis.text = element_text(size=20),
+        axis.text.x = element_text(angle=90)) + 
+  guides(col=guide_legend(title = NULL), shape=guide_legend(title = expression(Adj~P<=.1)))
+
+
+```
+
+
+```{r, echo=F, include=F, eval=F, message=F, warning=F, fig.height=5, fig.width=15}
+genes_coloc_fat_SQ=(coloc_res %>% filter(eqtl_file %in% c("AdpSQ") & clpp_mod>=.40))$hgnc
+genes_coloc_fat_Vis=(coloc_res %>% filter(eqtl_file %in% c("AdpV") & clpp_mod>=.40))$hgnc
+genes_coloc_liver=(coloc_res %>% filter(eqtl_file %in% c("Liv")& clpp_mod>=.40))$hgnc
+genes_coloc_muscle=(coloc_res %>% filter(eqtl_file %in% c("MuSk")& clpp_mod>=.40))$hgnc
+
+tmp.y=results_all_pairs %>% filter(sig5FDR_hFDR3) %>% group_by(cell,Treatment) %>% summarise(N=n()) 
+levels(tmp.y$cell)[levels(tmp.y$cell)=="Fat"]="Fat - SubQ"
+levels(tmp.y$cell)=c(levels(tmp.y$cell),"Fat - Visceral")
+tmp.y2=results_all_pairs %>% filter(sig5FDR_hFDR3 & cell=="Fat") %>% group_by(Treatment) %>% summarise(N=n()) %>% mutate(cell="Fat - Visceral")
+tmp.y=rbind(data.frame(tmp.y),data.frame(tmp.y2 %>% select(colnames(tmp.y))))
+
+p=merge(x = rbind(results_all_pairs %>% filter((cell =="Fat") & (sig5FDR_hFDR3) & (geneID %in% genes_coloc_fat_SQ)) %>% mutate(cell="Fat - SubQ"), results_all_pairs %>% filter((cell =="Fat") & (sig5FDR_hFDR3) & (geneID %in% genes_coloc_fat_Vis)) %>% mutate(cell="Fat - Visceral"), results_all_pairs %>% filter((cell =="Liver") & (sig5FDR_hFDR3) & (geneID %in% genes_coloc_liver)) %>% mutate(cell="Liver"), results_all_pairs %>% filter((cell =="Muscle") & (sig5FDR_hFDR3) & (geneID %in% genes_coloc_muscle)) %>% mutate(cell="Muscle")) %>% group_by(cell,Treatment) %>% summarise(N_DE=n()), y = tmp.y, all = T) %>% mutate(cell=factor(x = cell,levels = c("Muscle","Fat - SubQ","Fat - Visceral","Liver"))) %>%
+  ggplot(mapping = aes(x=Treatment, fill=cell, y = N_DE/N, label=N_DE)) + 
+  geom_col(position = position_dodge(1)) + 
+  geom_text(position = position_dodge(1), angle=90,color="white", hjust=1.5, vjust=.5) + 
+  scale_fill_manual(values = c("#E69F00", "#999999", "#000000", "#56B4E9"), drop=FALSE) +
+  theme_bw() + 
+  theme(legend.title = element_blank(),
+        legend.position = "top",
+        legend.text = element_text(size = 20),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size=20),
+        axis.text.y = element_text(size=15),
+        axis.text.x = element_text(size=15, angle = 90, vjust = 0.5, hjust = 1, colour = "black")) + 
+  ylab("% DE genes with sig. coloc") 
+ggsave(filename = '~/Box Sync/IR-GxE/manuscript/Figures/Fig03_DE_coloc.pdf',plot = p, width = 15,height = 5)
+p
+
+Fat_AdpV_DE_clpp=merge(x = results_all_pairs  %>%  filter(cell =="Fat") %>% select(cell, Treatment, geneID,sig5FDR_hFDR3),
+                       y = coloc_res %>% filter(eqtl_file %in% c("AdpV")) %>% select(hgnc,clpp_mod),
+                       by.x = "geneID",by.y = "hgnc") %>% mutate(cell = "Fat - Visceral") %>% 
+  mutate(DE=ifelse(test = sig5FDR_hFDR3,yes = "DE",no = "Not DE"))  %>% 
+  mutate(coloc=ifelse(test = clpp_mod>=.40,yes = "clpp_mod>=.40",no = "clpp_mod<40")) 
+
+Fat_AdpSQ_DE_clpp=merge(x = results_all_pairs  %>%  filter(cell =="Fat") %>% select(cell, Treatment, geneID,sig5FDR_hFDR3),
+                        y = coloc_res %>% filter(eqtl_file %in% c("AdpSQ")) %>% select(hgnc,clpp_mod),
+                        by.x = "geneID",by.y = "hgnc") %>% mutate(cell = "Fat - SubQ") %>% 
+  mutate(DE=ifelse(test = sig5FDR_hFDR3,yes = "DE",no = "Not DE"))  %>% 
+  mutate(coloc=ifelse(test = clpp_mod>=.40,yes = "clpp_mod>=.40",no = "clpp_mod<40")) 
+
+Liver_DE_clpp=merge(x = results_all_pairs  %>%  filter(cell =="Liver") %>% select(cell, Treatment, geneID,sig5FDR_hFDR3),
+                    y = coloc_res %>% filter(eqtl_file %in% c("Liv")) %>% select(hgnc,clpp_mod),
+                    by.x = "geneID",by.y = "hgnc") %>% 
+  mutate(DE=ifelse(test = sig5FDR_hFDR3,yes = "DE",no = "Not DE"))  %>% 
+  mutate(coloc=ifelse(test = clpp_mod>=.40,yes = "clpp_mod>=.40",no = "clpp_mod<40")) 
+
+
+Muscle_DE_clpp=merge(x = results_all_pairs  %>%  filter(cell =="Liver") %>% select(cell, Treatment, geneID,sig5FDR_hFDR3),
+                     y = coloc_res %>% filter(eqtl_file %in% c("MuSk")) %>% select(hgnc,clpp_mod),
+                     by.x = "geneID",by.y = "hgnc") %>% 
+  mutate(DE=ifelse(test = sig5FDR_hFDR3,yes = "DE",no = "Not DE"))  %>% 
+  mutate(coloc=ifelse(test = clpp_mod>=.40,yes = "clpp_mod>=.40",no = "clpp_mod<40")) 
+
+
+Fat_AdpV_enrichP=data.frame(t(sapply(levels(Fat_AdpV_DE_clpp$Treatment), FUN = function(foc_treat){
+  p1=with(data = Fat_AdpV_DE_clpp %>% filter(Treatment==foc_treat), expr = fisher.test(x = DE,y = coloc,or = 1,conf.int = T))
+  c(p1$"estimate", c(p1$"conf.int"), pval=p1$"p.value")
+})), check.names = F) %>% mutate(cell="Fat - Visceral") %>% mutate(Treatment=levels(Fat_AdpSQ_DE_clpp$Treatment))
+colnames(Fat_AdpV_enrichP) = c("OR", "LCI", "UCI", "P", "cell","Treatment")
+
+Fat_AdpSQ_enrichP=data.frame(t(sapply(levels(Fat_AdpSQ_DE_clpp$Treatment), FUN = function(foc_treat){
+  p1=with(data = Fat_AdpSQ_DE_clpp %>% filter(Treatment==foc_treat), expr = fisher.test(x = DE,y = coloc,or = 1,conf.int = T))
+  c(p1$"estimate", c(p1$"conf.int"), pval=p1$"p.value")
+})), check.names = F) %>% mutate(cell="Fat - SubQ") %>% mutate(Treatment=levels(Fat_AdpSQ_DE_clpp$Treatment))
+colnames(Fat_AdpSQ_enrichP) = c("OR", "LCI", "UCI", "P", "cell","Treatment")
+
+Liver_enrichP=data.frame(t(sapply(levels(Liver_DE_clpp$Treatment), FUN = function(foc_treat){
+  if(length(unique((Liver_DE_clpp %>% filter(Treatment==foc_treat))$DE))==2){
+    p1=with(data = Liver_DE_clpp %>% filter(Treatment==foc_treat), expr = fisher.test(x = DE,y = coloc,or = 1,conf.int = T))
+    x=c(p1$"estimate", c(p1$"conf.int"), pval=p1$"p.value")} else (x=rep(NA,4))
+  x
+})), check.names = F) %>% mutate(cell="Liver") %>% mutate(Treatment=levels(Liver_DE_clpp$Treatment))
+colnames(Liver_enrichP) = c("OR", "LCI", "UCI", "P", "cell","Treatment")
+
+Muscle_enrichP=data.frame(t(sapply(levels(Muscle_DE_clpp$Treatment), FUN = function(foc_treat){
+  if(length(unique((Muscle_DE_clpp %>% filter(Treatment==foc_treat))$DE))==2){
+    p1=with(data = Muscle_DE_clpp %>% filter(Treatment==foc_treat), expr = fisher.test(x = DE,y = coloc,or = 1,conf.int = T))
+    x=c(p1$"estimate", c(p1$"conf.int"), pval=p1$"p.value")} else (x=rep(NA,4))
+  x
+})), check.names = F) %>% mutate(cell="Muscle") %>% mutate(Treatment=levels(Muscle_DE_clpp$Treatment))
+colnames(Muscle_enrichP) = c("OR", "LCI", "UCI", "P", "cell","Treatment")
+
+
+all_enrichP=rbind(Muscle_enrichP,Fat_AdpV_enrichP,Fat_AdpSQ_enrichP,Liver_enrichP)
+
+p=ggplot(all_enrichP %>% filter(!is.na(P)) %>% filter(!is.infinite(OR)) %>% mutate(cell=factor(x = cell,levels = c("Muscle","Fat - SubQ","Fat - Visceral","Liver"))), 
+       aes(x=Treatment, y = OR, color=cell)) + 
+  # geom_errorbar(aes(ymin=LCI, ymax=UCI), width=.1,position=position_dodge(1)) +
+  geom_point(aes(shape = factor(P<=0.05, labels = c("P>=0.05", "P<=0.05"))), size=3,position=position_dodge(1)) + 
+  geom_hline(yintercept = 1, linetype="dashed") + 
+  theme_bw() + 
+  theme(legend.position = "top",
+        legend.title = element_blank(),
+        legend.text = element_text(size=15),
+        axis.title = element_text(size=20),
+        axis.title.x =element_blank(),
+        axis.text = element_text(size=20),
+        axis.text.x = element_text(angle=90,hjust = 1,vjust = .5))  +   
+  scale_colour_manual(values=c("#E69F00", "#999999", "#000000", "#56B4E9")) 
+ggsave(filename = '~/Box Sync/IR-GxE/manuscript/Figures/Fig03_DE_coloc_enrich.pdf',plot = p, width = 15,height = 5)
+
+
+# Fat_AdpV_DE_clpp %>% 
+#   ggplot(mapping = aes(x = Treatment, y = clpp_mod, fill=sig5FDR_hFDR3)) + 
+#   geom_boxplot() + 
+#   theme_bw() + 
+#   theme(axis.text.x = element_text(size=15, angle = 90, vjust = 0.5, hjust = 1),
+#         legend.position = "top")
+
+tiers=levels(coloc_res$step3)[-1]
+for(i in 1:length(tiers)){
+genes_coloc_fat_SQ=(coloc_res %>% filter(eqtl_file %in% c("AdpSQ") & clpp_mod>=.40 & step3==tiers[i] & (!duplicated(ensembl))))$hgnc
+genes_coloc_fat_Vis=(coloc_res %>% filter(eqtl_file %in% c("AdpV") & clpp_mod>=.40 & step3==tiers[i] & (!duplicated(ensembl))))$hgnc
+genes_coloc_liver=(coloc_res %>% filter(eqtl_file %in% c("Liv") & clpp_mod>=.40 & step3==tiers[i] & (!duplicated(ensembl))))$hgnc
+genes_coloc_muscle=(coloc_res %>% filter(eqtl_file %in% c("MuSk") & clpp_mod>=.40 & step3==tiers[i] & (!duplicated(ensembl))))$hgnc
+
+tmp.y=results_all_pairs %>% filter(sig5FDR_hFDR3) %>% group_by(cell,Treatment) %>% summarise(N=n()) 
+levels(tmp.y$cell)[levels(tmp.y$cell)=="Fat"]="Fat - SubQ"
+levels(tmp.y$cell)=c(levels(tmp.y$cell),"Fat - Visceral")
+tmp.y2=results_all_pairs %>% filter(sig5FDR_hFDR3 & cell=="Fat") %>% group_by(Treatment) %>% summarise(N=n()) %>% mutate(cell="Fat - Visceral")
+tmp.y=rbind(data.frame(tmp.y),data.frame(tmp.y2 %>% select(colnames(tmp.y))))
+
+p=merge(x = rbind(results_all_pairs %>% filter((cell =="Fat") & (sig5FDR_hFDR3) & (geneID %in% genes_coloc_fat_SQ)) %>% mutate(cell="Fat - SubQ"), results_all_pairs %>% filter((cell =="Fat") & (sig5FDR_hFDR3) & (geneID %in% genes_coloc_fat_Vis)) %>% mutate(cell="Fat - Visceral"), results_all_pairs %>% filter((cell =="Liver") & (sig5FDR_hFDR3) & (geneID %in% genes_coloc_liver)) %>% mutate(cell="Liver"), results_all_pairs %>% filter((cell =="Muscle") & (sig5FDR_hFDR3) & (geneID %in% genes_coloc_muscle)) %>% mutate(cell="Muscle")) %>% group_by(cell,Treatment) %>% summarise(N_DE=n()), y = tmp.y, all = T) %>% mutate(cell=factor(x = cell,levels = c("Muscle","Fat - SubQ","Fat - Visceral","Liver"))) %>%
+  ggplot(mapping = aes(x=Treatment, fill=cell, y = N_DE/N, label=N_DE)) + 
+  geom_col(position = position_dodge(1)) + 
+  geom_text(position = position_dodge(1), angle=90,color="white", hjust=1.5, vjust=.5) + 
+  scale_fill_manual(values = c("#E69F00", "#999999", "#000000", "#56B4E9"), drop=FALSE) +
+  theme_bw() + 
+  theme(plot.title = element_text( size=30),
+    legend.title = element_blank(),
+    legend.position = "top",
+    legend.text = element_text(size = 20),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size=20),
+    axis.text.y = element_text(size=15),
+    axis.text.x = element_text(size=15, angle = 90, vjust = 0.5, hjust = 1, colour = "black")) + 
+  ylab("% DE genes with sig. coloc")  + 
+  ggtitle(tiers[i])
+
+print(p)
+}
+
+```
+
+<!-- DE tile plots for coloc genes -->
+```{r, echo=F, include=T, eval=F, message=F, warning=F, fig.height=6, fig.width=15}
+for(i in unique(coloc_res_sig$locus)){
+coloc_res_loci=coloc_res %>% filter(coloc_res$locus == i)
+DE_res_coloc=results_all_pairs[results_all_pairs$geneID %in% unique(coloc_res_loci$hgnc),] %>% mutate(geneID = factor(x = geneID,levels = unique(coloc_res_loci$hgnc)))
+if(nrow(DE_res_coloc)>0){
+p=ggplot(data = DE_res_coloc,mapping = aes(x = Treatment, y=geneID)) + 
+  facet_wrap(~cell) + 
+   geom_tile(mapping = aes(fill=factor(DE_dir, levels=c("0","1","-1"), 
+                                        labels = c("Not DE", "Up-regulated","Down-regulated"))),color="black") + 
+  theme_bw() + 
+  theme(legend.position = "top", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size=20), 
+        axis.text.x = element_text(angle = 90, size=15, vjust = .5, hjust = 1, color="black"), 
+        axis.text.y = element_text(size=15, color="black"), 
+        axis.title = element_blank(), 
+        strip.text = element_text(size=20)) + 
+  scale_x_discrete(drop=FALSE) + 
+  scale_y_discrete(drop=FALSE) + 
+  scale_fill_manual(values = c("white", "red", "blue"), drop=FALSE) 
+ggsave(filename = paste0('../manuscript/Figures/tmp_DE_pattern_per_coloc_locus/wide/locus_',i,".pdf"),plot = p,width = 15, height = 5)
+
+tmp=expand.grid(unique(DE_res_coloc$geneID),cell_labels)
+DE_res_coloc=DE_res_coloc %>% mutate(gene_cell=factor(x = paste(geneID,cell,sep = '-'), levels = sort(paste(tmp$Var1,tmp$Var2,sep = "-"))))
+
+p=ggplot(data = DE_res_coloc,mapping = aes(x = Treatment, y=gene_cell)) + 
+   geom_tile(mapping = aes(fill=factor(DE_dir, levels=c("0","1","-1"), 
+                                        labels = c("Not DE", "Up-regulated","Down-regulated"))),color="black") + 
+  theme_bw() + 
+  theme(legend.position = "top", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size=20), 
+        axis.text.x = element_text(angle = 90, size=15, vjust = .5, hjust = 1, color="black"), 
+        axis.text.y = element_text(size=15, color="black"), 
+        axis.title = element_blank(), 
+        strip.text = element_text(size=20)) + 
+  scale_x_discrete(drop=FALSE) + 
+  scale_y_discrete(drop=FALSE) + 
+  scale_fill_manual(values = c("white", "red", "blue"), drop=FALSE) 
+  ggsave(filename = paste0('../manuscript/Figures/tmp_DE_pattern_per_coloc_locus/long/locus_',i,".pdf"),plot = p,width = 10, height = 10)
+}
+}
+```
+
+Coloc and DE tile plot for locus of interest 
+
+```{r, echo=F, include=T, eval=T, message=F, warning=F, fig.height=6, fig.width=10}
+locus_nr=50 #35 264 #311 , 272,  
+tmp_data=coloc_res %>% mutate(trait_tissue=factor(paste(gwas_trait,eqtl_file, sep = '-'))) %>% 
+  mutate(locus_snp_gene=paste(locus,rsid, hgnc, sep = '-')) %>% filter(locus==locus_nr)
+plot_coloc = plot_coloc_results_function(data = tmp_data) + 
+  theme(axis.text=element_text(size=10))
+
+DE_res_coloc=results_all_pairs[results_all_pairs$geneID %in% unique(tmp_data$hgnc),] 
+tmp=expand.grid(unique(DE_res_coloc$geneID),unique(DE_res_coloc$cell))
+DE_res_coloc=DE_res_coloc %>% mutate(gene_cell=factor(x = paste(geneID,cell,sep = '-'), levels = sort(paste(tmp$Var1,tmp$Var2,sep = "-"))))
+DE_plot=DE_plot_function(DE_res_coloc)  + coord_flip()
+
+plot_coloc
+DE_plot
+
+```
+
+```{r, echo=F, include=F, eval=F, message=F, warning=F, fig.height=10, fig.width=15}
+# Are DE genes depleted in coloc hits?
+coloc_genes=coloc_res %>% filter(hgnc %in% results_all_pairs$geneID) %>% group_by(hgnc) %>% summarise(max_clpp=max(clpp_mod))
+
+coloc_genes_HEPG2 = merge(x = coloc_genes, y = data.table(sig5FDR_MT_short_HEPG2[, colSums(sig5FDR_MT_short_HEPG2)>100], keep.rownames = T),by.x = "hgnc",  by.y = "rn")
+
+coloc_genes_SGBS = merge(x = coloc_genes, y = data.table(sig5FDR_MT_short_SGBS[, colSums(sig5FDR_MT_short_HEPG2)>100], keep.rownames = T), by.x = "hgnc",  by.y = "rn")
+
+coloc_genes_SKMC = merge(x = coloc_genes, y = data.table(sig5FDR_MT_short_SKMC[, colSums(sig5FDR_MT_short_HEPG2)>100], keep.rownames = T),by.x = "hgnc",  by.y = "rn")
+
+p=ggplot(data = rbind(data.frame(cell="HEPG2",melt(coloc_genes_HEPG2, id.vars=c("hgnc","max_clpp"))),
+data.frame(cell="SGBS",melt(coloc_genes_SGBS, id.vars=c("hgnc","max_clpp"))),
+data.frame(cell="SKMC", melt(coloc_genes_SKMC, id.vars=c("hgnc","max_clpp")))), mapping = aes(x = value, y = max_clpp, fill=cell)) + geom_boxplot()  + facet_wrap(~variable, nrow = 3) + theme_bw() + theme(axis.title.x = element_blank(), legend.position = "top") + ylab("Modified CLPP")
+p
+
+EnrichP_HEPG2=data.frame(t(sapply(X = 3:ncol(coloc_genes_HEPG2), FUN = function(i) summary(glm(formula = coloc_genes_HEPG2[,i]~max_clpp>=.4, family = "binomial", data = coloc_genes_HEPG2))$coef[2,c(1,4)])), row.names = colnames(coloc_genes_HEPG2)[-c(1:2)], check.names = F)
+EnrichP_HEPG2$Estimate=exp(EnrichP_HEPG2$Estimate)
+
+EnrichP_SKMC=data.frame(t(sapply(X = 3:ncol(coloc_genes_SKMC), FUN = function(i) summary(glm(formula = coloc_genes_SKMC[,i]~max_clpp>=.4, family = "binomial", data = coloc_genes_SKMC))$coef[2,c(1,4)])), row.names = colnames(coloc_genes_SKMC)[-c(1:2)], check.names = F)
+EnrichP_SKMC$Estimate=exp(EnrichP_SKMC$Estimate)
+
+EnrichP_SGBS=data.frame(t(sapply(X = 3:ncol(coloc_genes_SGBS), FUN = function(i) summary(glm(formula = coloc_genes_SGBS[,i]~max_clpp>=.4, family = "binomial", data = coloc_genes_SGBS))$coef[2,c(1,4)])), row.names = colnames(coloc_genes_SGBS)[-c(1:2)], check.names = F)
+EnrichP_SGBS$Estimate=exp(EnrichP_SGBS$Estimate)
+
+
+print("Perturbations that passed the nominal significance level in Liver ")
+EnrichP_HEPG2[EnrichP_HEPG2$`Pr(>|z|)`<.05,]
+print("Perturbations that passed the nominal significance level in Fat ")
+EnrichP_SGBS[EnrichP_SGBS$`Pr(>|z|)`<.05,]
+print("Perturbations that passed the nominal significance level in ")
+EnrichP_SKMC[EnrichP_SKMC$`Pr(>|z|)`<.05,]
+
+print("Perturbations that passed the significance level in Liver after Bonferroni correction")
+EnrichP_HEPG2[p.adjust(p = EnrichP_HEPG2$`Pr(>|z|)`, method = "bonferroni")<.05,]
+print("Perturbations that passed the significance level in Fat after Bonferroni correction")
+EnrichP_SGBS[p.adjust(p = EnrichP_SGBS$`Pr(>|z|)`, method = "bonferroni")<.05,]
+print("Perturbations that passed the significance level in Muscle after Bonferroni correction")
+EnrichP_SKMC[p.adjust(p = EnrichP_SKMC$`Pr(>|z|)`, method = "bonferroni")<.05,]
+
+```

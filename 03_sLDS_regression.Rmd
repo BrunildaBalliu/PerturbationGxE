@@ -1,0 +1,208 @@
+---
+title: "LDSC-SEG analysis"
+author: "Brunilda Balliu"
+date: "9/5/2019"
+output: html_document
+---
+
+# Traits considered
+|Trait Type	|Trait	                     |Study	        |Reference	                                                            | Pop |  N    |   M  |              File name                     |
+|--------------|----------------------------|--------------|-----------------------------------------------------------------------|-----|-------|------|--------------------------------------------|
+|IR	           |Fasting insulin             |MAGIC	        |Manning et al 2012                                                     | EUR |   52K	| 2.6M | FastInsu_MAGIC_Manning_et_al_Europeans_hg19|
+|IR	           |Fasting glucose             |MAGIC	        |Manning et al 2012                                                     | EUR |   58K	| 2.6M | FastGlu_MAGIC_Manning_et_al_Europeans_hg19|
+|IR	           |Insulin Sensitivity Index   |MAGIC          |Walford et al. 2016                                                    | EUR |   16K | 2.4M | ISI_MAGIC_AdjAgeSex_Europeans_hg19|
+|IR	           |Insulin Sensitivity Index   |GENESIS        |Knowles et al 2015                                                     | EUR |  2.8K | 12M  | ISI_GENESIS_adjAgeSex_Europeans_hg19|
+|IR	           |BMI	                        |GIANT + UKBB 	|Yengo et al 2015 https://www.ncbi.nlm.nih.gov/pubmed/30124842          | EUR |  700K | 25M  | BMI_GIANT_UKBiob_Europeans_hg19 |
+|IR-anthropometric	   |Extreme BMI                 |GIANT          |Berndt et al 2013 https://pubmed.ncbi.nlm.nih.gov/23563607/            | EUR |  260K | 1.9M | BMI_Extreme_GIANT_Stage1_Berndt2013_Europeans_hg19.txt  |
+|anthropometric	       |Extreme height              |GIANT          |Berndt et al 2013 https://pubmed.ncbi.nlm.nih.gov/23563607/            | EUR |  260K | 1.9M | Height_Extreme_GIANT_Stage1_Berndt2013_Europeans_hg19.txt  |
+|IR-anthropometric	           |Waist-hip ratio	            |GIANT + UKBB	  |Pulit et al 2019 https://www.ncbi.nlm.nih.gov/pubmed/30239722          | EUR |  694K | 25M  | WHR_GIANT_UKBiob_Europeans_hg19 | 
+|IR	           |Type 2 Diabetes 	          |               |Mahajan et al 2018 https://www.nature.com/articles/s41588-018-0084-1   | EUR |  898K | 8M   | T2D_Mahajan_Europeans_hg19 | 	
+|IR	           |Triglycerides	              |               |Teslovich et al 2010                                                   | EUR	|  100K | 2.6M | Triglycerides_Teslovich_et_al_Europeans_hg19 |
+|IR	           |HDL                         |               |Teslovich et al 2010                                                   | EUR |  100K | 2.6M | HDL_Teslovich_et_al_Europeans_hg19|
+|psychiatric	 |Schizophrenia               |PGC            | PGC NatGen 2011 https://www.nature.com/articles/ng.940                | EUR |   51K	|	12M  | Schizophrenia_SWGPGC_Europeans_hg18.txt|
+|psychiatric	 |MDD                         |PGC            | PGC NatGen 2018 https://www.ncbi.nlm.nih.gov/pubmed/29700475          | EUR |   50K | 13M  | MDD_PGC_Europeans_hg19.txt|
+|psychiatric	 |MDD                         |PGC+UKBB       | PGC NatGen 2019 https://www.nature.com/articles/s41593-018-0326-7     | EUR |  807K | 8M   | MDD_PGC_UKBB_Europeans_hg19.txt|
+|psychiatric	 |Bipolar Disorder            |PGC            | PGC NatGen 2019 https://www.nature.com/articles/s41588-019-0397-8     | EUR |   50K | 13M  | Bipolar_PGC_Europeans_hg19.txt|
+|psychiatric	 |Anorexia Nervosa            |PGC            | PGC Nature 2019 https://www.nature.com/articles/s41588-019-0439-2     | EUR |   73K	|	12M  | Anorexia_PGC_Europeans_hg19.tsv|
+|psychiatric	 |Autism                      |iPSYCH-PGC     | PGC Lancet 2013 https://www.thelancet.com/journals/lancet/article/PIIS0140-6736(12)62129-1/fulltext  | EUR | 10K|	 1.1M  | Autism_PGC_Europeans_hg19.sumstats.gz|
+|psychiatric	 |Alzheimer's                 |IGAP           | Lambert et al 2013 https://www.ncbi.nlm.nih.gov/pubmed/?term=24162737 | EUR |   54K | 7M   | Alzheimer_IGAP_Europeans_hg19.txt|
+|autoimmune	   |RA                          |               | Okada et al 2010 https://www.ncbi.nlm.nih.gov/pubmed/24390342         | EUR |   58K | 8.7M | RA_Okada_Europeans_hg19.txt|
+|autoimmune	   |Crohn's disease             |IIDBGC         | Liu et al 2015 https://www.ncbi.nlm.nih.gov/pubmed/26192919           | EUR |   20K | 11M  | Crohns_IIDBGC_Europeans_hg19.txt|
+|autoimmune	   |Primary Biliary Cirrhosis   |               | Cordell et al 2015 https://pubmed.ncbi.nlm.nih.gov/26394269/          | EUR |   13K |  525K| Primary_biliary_cirrhosis_Europeans_hg19.txt | 
+|autoimmune	   |Lupus                       |               | Bentham et al 2015 https://www.ncbi.nlm.nih.gov/pubmed/26502338       | EUR |   14K | 11M  | Lupus_Bentham_Europeans_hg19.txt|
+|autoimmune  | ALLERGY_ECZEMA_DIAGNOSED    |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/   | EUR |     |  1.2M |    |
+|autoimmune  | ASTHMA_DIAGNOSED    |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/   | EUR |     |  1.2M |    |
+|cardiometabolic	   |CAD                         |CARDIoGRAM     | Schunkert et al 2011 https://www.ncbi.nlm.nih.gov/pubmed/21378990     | EUR |   77K | 900K | CAD_CARDIoGRAM_Europeans_hg19.txt  |
+|cardiometabolic  | CARDIOVASCULAR    |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/   | EUR |     |  1.2M |    |
+|reproductive  |Age at Menarch              |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/ | EUR| 242K  |1.2M  | Menarche_Age_UKBB_Europeans_hg19.sumstats.gz  |
+|reproductive  |Age at Menopause           |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/   | EUR |  143K  |  1.2M |   Menopause_Age_UKBB_Europeans_hg19.sumstats.gz |
+|haemotological  |Diastolic Blood pressure            |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/   | EUR |  134K  |  1.2M |   DBP_UKBB_Europeans_hg19.sumstats.gz |
+|haemotological  |Systolic Blood pressure           |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/   | EUR |  134K  |  1.2M |   SBP_UKBB_Europeans_hg19.sumstats.gz |
+|haemotological  |EOSINOPHIL_COUNT    |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/   | EUR |     |  1.2M |    |
+|haemotological  |LYMPHOCYTE_COUNT    |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/   | EUR |     |  1.2M |    |
+|haemotological  |MONOCYTE_COUNT    |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/   | EUR |     |  1.2M |    |
+|haemotological  |RED_COUNT    |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/   | EUR |     |  1.2M |    |
+|haemotological  |RBC_DISTRIB_WIDTH    |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/   | EUR |     |  1.2M |    |
+|haemotological  |PLATELET_COUNT    |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/   | EUR |     |  1.2M |    |
+|haemotological  |PLATELET_DISTRIB_WIDTH    |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/   | EUR |     |  1.2M |    |
+|haemotological  |MEAN_PLATELET_VOL    |UKBB           | https://alkesgroup.broadinstitute.org/UKBB/   | EUR |     |  1.2M |    |
+
+# Heritability partition by annotation
+We applied stratified LD score regression to GWAS summary statistics of each trait to evaluate the contribution of the annotation based on genes DE in each perturbation and cell type to trait heritability. 
+We jointly model the annotation based on each perturbation and cell type, a genome annotation that corresponds to all expressed genes, and 52 baseline annotations (including genic regions, enhancer regions, conserved regions, etc). 
+
+
+# Summarizing heritability enrichment results
+```{r,  echo=FALSE, include=TRUE,  eval=TRUE, fig.width=15, fig.height=10, warning=FALSE, message=FALSE}
+library(ggplot2); 
+library(dplyr); 
+library(qvalue)
+
+col_SGBS="#999999"
+col_SKMC="#E69F00"
+col_HepG2="#56B4E9"
+
+perturb_order=c("GLUC", "INSU", "IGF1", "SB20", "SP60", "U012", "WORT", "IL-6", "TGFB1", "TNFa", "ADIP", "LEPT", "ATOR", "ROSI", "METF", "DECA", "LAUR", "RETA", "DEXA", "IBMX", "ISOP")
+cell_order=c("SKMC", "SGBS", "HEPG2")
+cell_labels=c("Muscle", "Fat", "Liver")
+cell_color=c(col_SKMC,col_SGBS,col_HepG2)
+
+################ Total observed heritability for each trait
+total_observed_scale_h2=read.table(file = '../results/ldsc_reg/total_observed_scale_h2_20201120.tsv',header = F, stringsAsFactors = F, sep=' ')
+
+# Add cell, perturbation, and trait information
+total_observed_scale_h2$V1=gsub(pattern = "/u/home/b/bballiu/project-pajukant/MoMeIR/results/ldsc_reg/hsq_enrich_res/|.log:Total|_Europeans|",replacement = "",x = total_observed_scale_h2$V1)
+trait=gsub(pattern = paste(c(perturb_order,'_hg19_','_hg18_','_SKMC_','SKMC_','HEPG2_','_HEPG2_','_SGBS_','SGBS_'),collapse = "|"), replacement = "", x = total_observed_scale_h2$V1)
+cell = gsub(pattern = paste(c(perturb_order,'hg19','hg18',unique(trait),'_'),collapse = "|"), replacement = "", x = total_observed_scale_h2$V1)
+perturbation=gsub(pattern = paste(c(unique(cell),'hg19','hg18',unique(trait),'_'),collapse = "|"), replacement = "", x = total_observed_scale_h2$V1)
+
+# Add h2, se of h2 and h2 z-scores 
+h2_est=total_observed_scale_h2$V5
+h2_se=as.numeric(gsub(pattern = ")", replacement = "", x = gsub(pattern = "(", replacement = "", x = total_observed_scale_h2$V6, fixed = T),fixed = T))
+all_res=data.frame(trait=trait, cell=cell, perturbation=perturbation, h2_est=h2_est, h2_se=h2_se)
+
+traits_2_exclude=c("MDD_PGC_UKBB","Height_Extreme_GIANT_Stage1_Berndt2013", "BMI_Extreme_GIANT_Stage1_Berndt2013","CAD_CARDIoGRAM", "blood_MEAN_PLATELET_VOL","blood_PLATELET_DISTRIB_WIDTH","Primary_biliary_cirrhosis")
+
+total_observed_scale_h2=all_res %>% group_by(trait) %>% summarise(h2=mean(h2_est),se=mean(h2_se)) %>% mutate(z_score=h2/se)  %>% filter(!trait %in% traits_2_exclude)
+
+# rename traits 
+total_observed_scale_h2$trait= unique(gsub(pattern = "_DIAGNOSED|_IGAP|_PGC|_SWGPGC|_GIANT|_UKBiob|_UKBB|_Teslovich_et_al|_Okada|_Mahajan|_MAGIC_Manning_et_al|_Stage1_Berndt2013|_AdjAgeSex|_adjAgeSex|_IIDBGC|_Bentham", replacement = "", total_observed_scale_h2$trait))
+
+total_observed_scale_h2 = total_observed_scale_h2 %>% mutate(trait=factor(x = trait, 
+                                                levels = c("ISI_GENESIS", "ISI_MAGIC", "FastInsu", "FastGlu",  "T2D",  "WHR",  "Triglycerides","HDL", "BMI",  "CARDIOVASCULAR", 
+                                                  "Alzheimer", "Anorexia", "Autism",  "Bipolar", "MDD", "Schizophrenia", 
+                                                  "ALLERGY_ECZEMA", "ASTHMA", "Crohns","Lupus",  "Primary_biliary_cirrhosis",  "RA", 
+                                                  "blood_EOSINOPHIL_COUNT", "blood_LYMPHOCYTE_COUNT",  "blood_MONOCYTE_COUNT", "blood_PLATELET_COUNT",  "blood_MEAN_PLATELET_VOL", "blood_PLATELET_DISTRIB_WIDTH", 
+                                                  "blood_RED_COUNT", "blood_RBC_DISTRIB_WIDTH", "blood_pressure_diastolic", "blood_pressure_systolic",  
+                                                  "Menarche_Age", "Menopause_Age"),
+                                                labels = c(
+                                                  "Direct Insulin Sensitivity", "Surrogate Insulin Sensitivity", "Fasting Insulin", "Fasting Glucose",  "Type 2 Diabetes",  "Waist-Hip Ratio",  "Triglycerides","HDL", "BMI", "Cardiovascular disease", 
+                                                  "Alzheimer's disease", "Anorexia", "Autism",  "Bipolar", "Major depressive disorder", "Schizophrenia", 
+                                                  "Allergy - Eczema", "Asthma", "Crohn's disease","Lupus",  "Primary Biliary Cirrhosis",  "Rheumatoid Arthritis", 
+                                                  "Eosinophil Count", "Lymphocyte Count", "Monocyte Count", "Platelet Count" ,  "Mean Platelet Volume",  "Platelet Distribution Width", 
+                                                  "Red Blood Cell Count", "Red Blood Cell Distribution Width ", 
+                                                  "Diastolic Blood Pressure", "Systolic Blood Pressure",  
+                                                  "Age at Menarche", "Age at Menopause")))
+
+p_obs_her=ggplot(data = total_observed_scale_h2 , 
+                 mapping = aes(x=trait, y=round(100*h2,2), 
+fill=factor(x = z_score>=7, levels = c("FALSE","TRUE"), labels = c("h2 Z-score<7", "h2 Z-score>=7")))) + 
+  geom_col() + 
+  coord_flip() +
+  theme_bw() + 
+  theme(axis.title.y = element_blank(),
+        axis.title.x=element_text(size=20),
+        axis.text.y=element_text(size=15, color="black"),
+        axis.text.x=element_text(size=15, color="black"),
+        legend.position = c(.9,.9),
+        legend.background = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size=15, color="black")) + 
+  ylab("Trait heritability (%)")  + 
+  scale_y_continuous(breaks = seq(0,100,5))
+
+p_obs_her
+
+```
+
+
+```{r,  echo=FALSE, include=TRUE,  eval=TRUE, fig.width=15, fig.height=10, warning=FALSE, message=FALSE}
+################ Proportion of heritability and importance of each annotation, conditional on baseline annotation and annotation of all genes
+h2_by_partition_conditional=read.table(file = '../results/ldsc_reg/hsq_partition_by_perturb_enrich_pval_20201120.tsv',header = T, stringsAsFactors = F, sep='\t') %>% arrange(Trait, Name) 
+
+# Add cell, perturbation, and trait information
+h2_by_partition_conditional$Trait=gsub(pattern = "_Europeans|_hg19|_hg18",replacement = "", x = h2_by_partition_conditional$Trait)
+tmp=matrix(data = unlist(strsplit(x = h2_by_partition_conditional$Name, split = '_')), ncol = 2, byrow = T)
+h2_by_partition_conditional$cell=tmp[,2]
+h2_by_partition_conditional$perturbation=tmp[,1]
+
+# Exclude traits
+h2_by_partition_conditional=h2_by_partition_conditional %>% filter(!Trait %in% traits_2_exclude)
+
+# rename traits 
+h2_by_partition_conditional$Trait= gsub(x = h2_by_partition_conditional$Trait, replacement = "" , pattern = "_DIAGNOSED|_IGAP|_PGC|_SWGPGC|_GIANT|_UKBiob|_UKBB|_Teslovich_et_al|_Okada|_Mahajan|_MAGIC_Manning_et_al|_Stage1_Berndt2013|_AdjAgeSex|_adjAgeSex|_IIDBGC|_Bentham")
+
+h2_by_partition_conditional = h2_by_partition_conditional %>% mutate(Trait=factor(x = Trait, 
+                                                levels = c(
+                                                  "ISI_GENESIS", "ISI_MAGIC", "FastInsu", "FastGlu",  "T2D",  "WHR",  "Triglycerides","HDL", "BMI", "CARDIOVASCULAR", 
+                                                  "Alzheimer", "Anorexia", "Autism",  "Bipolar", "MDD", "Schizophrenia", 
+                                                  "ALLERGY_ECZEMA", "ASTHMA", "Crohns","Lupus",  "Primary_biliary_cirrhosis",  "RA", 
+                                                  "blood_EOSINOPHIL_COUNT", "blood_LYMPHOCYTE_COUNT",  "blood_MONOCYTE_COUNT", "blood_PLATELET_COUNT",  "blood_MEAN_PLATELET_VOL", "blood_PLATELET_DISTRIB_WIDTH", 
+                                                  "blood_RED_COUNT", "blood_RBC_DISTRIB_WIDTH", "blood_pressure_diastolic", "blood_pressure_systolic",  
+                                                  "Menarche_Age", "Menopause_Age"),
+                                                labels = c(
+                                                  "Direct Insulin Sensitivity", "Surrogate Insulin Sensitivity", "Fasting Insulin", "Fasting Glucose",  "Type 2 Diabetes",  "Waist-Hip Ratio",  "Triglycerides","HDL", "BMI", "Cardiovascular disease", 
+                                                  "Alzheimer's disease", "Anorexia", "Autism",  "Bipolar", "Major depressive disorder", "Schizophrenia", 
+                                                  "Allergy - Eczema", "Asthma", "Crohn's disease","Lupus",  "Primary Biliary Cirrhosis",  "Rheumatoid Arthritis", 
+                                                  "Eosinophil Count", "Lymphocyte Count", "Monocyte Count", "Platelet Count" ,  "Mean Platelet Volume",  "Platelet Distribution Width", 
+                                                   "Red Blood Cell Count", "Red Blood Cell Distribution Width ",
+                                                  "Diastolic Blood Pressure", "Systolic Blood Pressure",  
+                                                  "Age at Menarche", "Age at Menopause")))
+
+## Multiple testing adjustment
+# Simple BH/Bonferroni within traits.
+h2_by_partition_conditional = h2_by_partition_conditional %>% 
+  group_by(Trait) %>% 
+  mutate(BH_wt_trait_pval=p.adjust(Coefficient_P_value, method = "BH")) %>% 
+  mutate(Bonf_wt_trait_pval=p.adjust(Coefficient_P_value, method = "bonferroni")) %>%
+  ungroup() 
+
+# Simple BH/Bonferroni within traits and cell types.
+h2_by_partition_conditional = h2_by_partition_conditional %>% 
+  group_by(Trait,cell) %>% 
+  mutate(BH_wt_trait_cell_pval=p.adjust(Coefficient_P_value, method = "BH")) %>% 
+  mutate(Bonf_wt_trait_cell_pval=p.adjust(Coefficient_P_value, method = "bonferroni")) %>%
+  ungroup() 
+
+all_trait_herit_partition = merge(x = h2_by_partition_conditional, y = total_observed_scale_h2, by.x = "Trait", by.y = "trait") %>% 
+  mutate(cell=factor(x = cell, levels = cell_order, labels = cell_labels),
+         perturbation=factor(x = perturbation, levels = perturb_order))  %>% 
+  select(Trait, cell, perturbation, h2, se, z_score, Coefficient, Coefficient_std_error, Coefficient_P_value, BH_wt_trait_pval, BH_wt_trait_cell_pval) 
+
+write.csv(x = all_trait_herit_partition,file = '../results/ldsc_reg/all_results.csv',quote = F,row.names = F)
+Z_value=7
+
+p_her_cond_enrich=ggplot(all_trait_herit_partition %>% filter(z_score>=Z_value & BH_wt_trait_cell_pval<=0.20),
+        mapping = aes(x = perturbation, y = -log10(Coefficient_P_value), col=cell, 
+                      size=factor(BH_wt_trait_cell_pval<=0.10,  levels = c("FALSE","TRUE"), labels = c("BH P>10%", "BH P<=10%")))) + 
+  geom_point() + 
+  facet_wrap(~Trait,ncol=5) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle=90, vjust = .5, hjust = 1, color="black", size=12),
+        axis.title.x = element_blank(), 
+        axis.text.y = element_text(size=15),
+        axis.title.y = element_text(size=20), 
+        strip.text.x  = element_text(size=12), 
+        strip.text.y  = element_text(size=12), 
+        legend.position = "top", 
+        legend.title = element_text(size=20),
+        legend.text = element_text(size=20)) +
+  ylab(expression(-log[10](P))) +
+  scale_size_manual(values = c(2,4)) + 
+  guides(color=guide_legend(title = NULL, override.aes = list(size=5)),
+         size=guide_legend(title = NULL)) + 
+  scale_color_manual(values = cell_color) 
+
+p_her_cond_enrich
+```
+

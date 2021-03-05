@@ -1,0 +1,776 @@
+---
+title: "Molecular Mechanisms of Insulin Resistance Loci"
+subtitle: "Differential expression by perturbation analyses"
+author: "Brunilda Balliu"
+date: "2/19/2019"
+output: html_document
+---
+
+<!-- Libraries  and functions -->
+```{r, eval=TRUE, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+x=c("cowplot","data.table", "dplyr", "ggplot2",  "ggrepel", "magrittr" , "reshape2", "corrplot","stringr")
+
+# "Biobase", 'WebGestaltR','WriteXLS', 'knitr', "kableExtra", "gridGraphics", "variancePartition", "qvalue", "ggdendro", "ggrepel", "gridExtra", "ggcorrplot", "RColorBrewer", "sets", 
+
+garbage=lapply(x, require, character.only = TRUE)
+source('../../Functions.R')
+source('00_MoMeIR_Functions.R')
+
+DE_output_dir='../results/DE/'
+
+perturb_order=c("GLUC", "INSU", "IGF1", "SB20", "SP60", "U012", "WORT", "IL-6", "TGFB1", "TNFa", "ADIP", "LEPT", "ATOR", "ROSI", "METF", "DECA", "LAUR", "RETA", "DEXA", "IBMX", "ISOP")
+
+cell_order=c("HMCL-7304", "SGBS", "HEPG2")
+cell_labels=c("Muscle", "Fat", "Liver")
+cell_col=c("#E69F00","#999999","#56B4E9")
+```
+
+<!-- # Meta data and count data-->
+```{r, eval=FALSE, message=FALSE, warning=FALSE}
+# Set outliers, if any. Sample "B_14_01" for SGBS cell lines is contaminated with E.choli and needs to be excluded.
+Outliers="B_14_01"
+
+# Meta-data file containing RNA extraction, library preparation, and pre- and post-sequencing technical variables.
+meta_data_HEPG2=read.csv('../data/RNASeq/HEPG2_RNASeq_metadata_20190108.csv', check.names = F, stringsAsFactors = F)
+rownames(meta_data_HEPG2)=meta_data_HEPG2$SampleID2
+meta_data_HEPG2=meta_data_HEPG2[meta_data_HEPG2$Replicate %in% 1:3,] # Keep only three replicates per condition
+
+meta_data_SGBS=read.csv('../data/RNASeq/SGBS_RNASeq_metadata_20190108.csv', check.names = F, stringsAsFactors = F)
+rownames(meta_data_SGBS)=meta_data_SGBS$SampleID2
+meta_data_SGBS=meta_data_SGBS[meta_data_SGBS$Replicate %in% 1:3,] # Keep only three replicates per condition
+
+meta_data_SKMC=read.csv('../data/RNASeq/SKMC_RNASeq_metadata_20190612.csv', check.names = F, stringsAsFactors = F)
+rownames(meta_data_SKMC)=meta_data_SKMC$SampleID2
+meta_data_SKMC=meta_data_SKMC[meta_data_SKMC$Replicate %in% 1:3,] # Keep only three replicates per condition
+
+# Get rid of outlier sample
+meta_data_SGBS=meta_data_SGBS[!rownames(meta_data_SGBS) %in% Outliers,]
+
+# Add HEPG2 samples sequenced with SKMC to other HEPG2 samples
+# meta_data_HEPG2=rbind(meta_data_HEPG2, meta_data_SKMC[grep(pattern = "H",meta_data_SKMC$SampleID2),])
+meta_data_SKMC=meta_data_SKMC[-grep(pattern = "H",meta_data_SKMC$SampleID2),]
+
+# Center and scale continous variables to have mean zero and variance 1 
+vars=c("RNA_concentration", "Conc_ng_per_ml", "RNA_260_280", "RIN","prc_gc_content_avrg_r1_r2", "perc_exon_overlap_reads", "perc_PCR_duplicates", "perc_star_uniquely_mapped_reads")
+meta_data_HEPG2[,vars] = scale(meta_data_HEPG2[, vars])
+meta_data_SGBS[,vars] = scale(meta_data_SGBS[, vars])
+meta_data_SKMC[,vars] = scale(meta_data_SKMC[, vars])
+
+counts_HEPG2=t(data.frame(fread(file = '../data/RNASeq/HEPG2_RNASeq_readcount_hg19_20190108.tsv', header = T, sep = '\t'), row.names = 1))
+counts_HEPG2=counts_HEPG2[,as.character(meta_data_HEPG2$SampleID2)] 
+
+counts_SGBS=t(data.frame(fread(file = '../data/RNASeq/SGBS_RNASeq_readcount_hg19_20190108.tsv', header = T, sep = '\t'), row.names = 1))
+counts_SGBS=counts_SGBS[,as.character(meta_data_SGBS$SampleID2)] 
+
+counts_SKMC=t(data.frame(fread(file = '../data/RNASeq/SKMC_RNASeq_readcount_hg19_20190612.tsv', header = T, sep = '\t'), row.names = 1))
+counts_SKMC=counts_SKMC[,as.character(meta_data_SKMC$SampleID)] 
+colnames(counts_SKMC) = meta_data_SKMC$SampleID2
+
+# Change gene names to HUGO ids -->
+GeneNamesMap=read.csv(file = '../data/RNASeq/GeneNamesMap.csv', header = T, as.is = T, stringsAsFactors = F)
+rownames(GeneNamesMap)=GeneNamesMap$ensembl_gene_id.dot
+rownames(counts_HEPG2)=GeneNamesMap[rownames(counts_HEPG2),"hgnc_symbol"]
+rownames(counts_SGBS)=GeneNamesMap[rownames(counts_SGBS),"hgnc_symbol"]
+rownames(counts_SKMC)=GeneNamesMap[rownames(counts_SKMC),"hgnc_symbol"]
+
+# Get list of testable genes, i.e. genes with median expression > 10 in at least one set of treatment or contorl triplicate.  -->
+testable_genes=read.csv(file = '../data/RNASeq/testable_genes.csv', header = T)
+# rownames(testable_genes)=testable_genes[,1]
+counts_testable_any_HEPG2=counts_HEPG2[testable_genes[testable_genes$testable_any_HEPG2,"gene_names"],]
+counts_testable_any_SGBS=counts_SGBS[testable_genes[testable_genes$testable_any_SGBS,"gene_names"],]
+counts_testable_any_SKMC=counts_SKMC[testable_genes[testable_genes$testable_any_SKMC,"gene_names"],]
+```
+
+# Perturbations and their abbreviations
+
+Condition                 | Abbreviation | Category |
+|-------------------------|--------------|----------------------------------------------|
+GLUCOSE                   | GLUC  |   Glucose and insulin metabolism |
+INSULIN                   | INSU  |   Glucose and insulin metabolism |
+IGF1                      | IGF1  |   Glucose and insulin metabolism |
+SB203580                  | SB20  |   Insulin signaling (MAPK inhibitor)|
+SP600125                  | SP60  |   Insulin signaling (JNK inhibitor)|
+U0126                     | U012  |   Insulin signaling (MEK1/MEK2 inhibitor) |
+WORTMANIN                 | WORT  |   Insulin signaling (PI3K inhibitor) |
+IL-6                      | IL-6  |   Inflammation |
+TGF-B1                    | TGFB1 |   Inflammation |
+TNF-a                     | TNFa  |   Inflammation |
+ADIPONECTIN               | ADIP  |   Adipokine |
+LEPTIN                    | LEPT  |   Adipokine |
+ATORVASTATIN              | ATOR  |   LDL-lowering drug |
+ROSIGLITAZONE             | ROSI  |   Anti-diabetic drug|
+METFORMIN                 | METF  |   Anti-diabetic drug |
+DECANOYL-L-CARNITINE      | DECA  |   Fatty-acid metabolism |
+LAUROYL-L-CARNITINE       | LAUR  |   Fatty-acid metabolism |
+RETINOIC ACID             | RETA  |   Vitamin A metabolite|
+DEXAMETHASONE             | DEXA  |   Corticoid steroid |
+IBMX                      | IBMX  |   cAMP phosphodiesterase inhibitor |
+ISOPRENALINE              | ISOP  |   $\beta$ adrenoreceptor agonist |
+
+
+# Grouping of samples for DE by treatment analyses
+For HepG2 (human hepatocytes), we group treated and untreated samples by the _number of cell plated_. 
+
+|10000/CM2        |7500/CM2                 |5000/CM2           |2500/CM2                   |
+|-----------------|-------------------------|-------------------|---------------------------|
+CONTROL_G  (1)    | CONTROL-2  (3)          | CONTROL-3 (5)     | CONTROL-4  (7)            |
+GLUCOSE  (1)      | ISOPRENALINE (3)        | ADIPONECTIN (5)   | DECANOYL-L-CARNITINE (7)  |
+CONTROL1 (1)      | IGF1 (3)                | LEPTIN (5)        |                           |
+INSULIN  (1)      | IBMX (3)                | SB203580 (5)      |                           |
+TNF-a  (2)        | LAUROYL-L-CARNITINE (4) | SP600125 (6)      |                           |
+IL-6  (2)         | TGF-B1 (4)              | U0126 (6)         |                           |
+ROSIGLITAZONE (2) | METFORMIN (4)           | WORTMANIN (6)     |                           |
+DEXAMETHASONE (2) | ATORVASTATIN (4)        | RETINOIC ACID (6) |                           |
+
+For SGBS (human adipocytes), we group samples by _differentiation date_ and within that by _RNA extraction date_. 
+
+|11/18/17         |                         | 11/19/17          |                           |
+|-----------------|-------------------------|-------------------|---------------------------|
+**CONTROL_G** (1) | **CONTROL-2** (3)       | **CONTROL-3** (5) | **CONTROL-4**  (7)        |
+GLUCOSE  (1)      | ISOPRENALINE (3)        | ADIPONECTIN (5)   | DECANOYL-L-CARNITINE (7)  |
+**CONTROL1** (1)  | IGF1 (3)                | LEPTIN (5)        |                           |
+INSULIN  (1)      | IBMX (3)                | SB203580 (5)      |                           |
+TNF-a  (2)        | LAUROYL-L-CARNITINE (4) | SP600125 (6)      |                           |
+IL-6  (2)         | TGF-B1 (4)              | U0126 (6)         |                           |
+ROSIGLITAZONE (2) | METFORMIN (4)           | WORTMANIN (6)     |                           |
+DEXAMETHASONE (2) | ATORVASTATIN (4)        | RETINOIC ACID (6) |                           |
+
+Similarly, for HMCL-7304 (human skeletal myocytes), we group samples by _differentiation date_ and within that by _RNA extraction date_. 
+
+04/13/2019        | 04/14/2019              | 04/15/2019        |                           |
+|-----------------|-------------------------|-------------------|---------------------------|
+**CONTROL_G** (1) | **CONTROL-2** (3)       | METFORMIN (4)     | WORTMANIN (6)             |
+GLUCOSE  (1)      | ISOPRENALINE (3)        | ATORVASTATIN (4)  | RETINOIC ACID (6)         |
+**CONTROL1** (1)  | IGF1 (3)                | **CONTROL-3** (5) | **CONTROL-4**  (7)        |
+INSULIN  (1)      | IBMX (3)                | ADIPONECTIN (5)   | DECANOYL-L-CARNITINE (7)  |
+TNF-a  (2)        | LAUROYL-L-CARNITINE (4) | LEPTIN (5)        |                           |
+IL-6  (2)         | TGF-B1 (4)              | SB203580 (5)      |                           |
+ROSIGLITAZONE (2) |                         | SP600125 (6)      |                           |
+DEXAMETHASONE (2) |                         | U0126 (6)         |                           |
+
+
+# Differential expression by treatment analyses
+I run differential expression by treatment analyses _for each cell line separately_ correcting for \% GC content, \% exon overlapping reads, RNA concentration, \% reads marked as PCR duplicates, RNA 260/280, RIN, sequencing batch (only relavant for HepG2), and % uniquely mapped reads. 
+
+<!-- This part takes a long time to run. See _runDE_ function on how it is done. -->
+```{r, eval=FALSE}
+library("DESeq2")
+
+##### HEPG2
+Pairs_HEPG2=matrix(c(
+  "CNTR_G","GLUC", 
+  "CNTR1","INSU", 
+  "CNTR1","TNFa", 
+  "CNTR1","IL-6", 
+  "CNTR1","ROSI", 
+  "CNTR1","DEXA", 
+  "CNTR2","ISOP", 
+  "CNTR2","IGF1", 
+  "CNTR2","IBMX", 
+  "CNTR2","LAUR", 
+  "CNTR2","TGFB1", 
+  "CNTR2","METF", 
+  "CNTR2","ATOR", 
+  "CNTR3","ADIP", 
+  "CNTR3","LEPT", 
+  "CNTR3","SB20", 
+  "CNTR3","SP60", 
+  "CNTR3","U012", 
+  "CNTR3","WORT", 
+  "CNTR3","RETA", 
+  "CNTR4","DECA"), 
+  ncol = 2, byrow = T, dimnames = list(NULL, c("Member 1", "Member 2")))
+
+formula_HEPG2 = formula(paste0("~ ", paste(c("RNA_concentration", "Conc_ng_per_ml" , "RNA_260_280", "RIN", "Sequencing_batch", "prc_gc_content_avrg_r1_r2", "perc_exon_overlap_reads", "perc_PCR_duplicates", "perc_star_uniquely_mapped_reads", "Treatment"), collapse = "+")))
+
+runDE(meta_data = meta_data_HEPG2, counts = counts_testable_any_HEPG2, cell="HEPG2", Pairs = Pairs_HEPG2, design_formula = formula_HEPG2, DE_output_dir=DE_output_dir, alpha=0.05)
+
+##### SGBS
+Pairs_SGBS=matrix(c(
+  "CNTR_G","GLUC", 
+  "CNTR1","INSU", 
+  "CNTR1","TNFa", 
+  "CNTR1","IL-6", 
+  "CNTR1","ROSI", 
+  "CNTR1","DEXA", 
+  "CNTR2","ISOP", 
+  "CNTR2","IGF1", 
+  "CNTR2","IBMX", 
+  "CNTR2","LAUR", 
+  "CNTR2","TGFB1", 
+  "CNTR2","METF", 
+  "CNTR2","ATOR", 
+  "CNTR3","ADIP", 
+  "CNTR3","LEPT", 
+  "CNTR3","SB20", 
+  "CNTR3","SP60", 
+  "CNTR3","U012", 
+  "CNTR3","WORT", 
+  "CNTR3","RETA", 
+  "CNTR4","DECA"), 
+  ncol = 2, byrow = T, dimnames = list(NULL, c("Member 1", "Member 2")))
+
+formula_SGBS = formula(paste0("~ ",paste(c("RNA_concentration", "Conc_ng_per_ml" , "RNA_260_280", "RIN", "prc_gc_content_avrg_r1_r2", "perc_exon_overlap_reads", "perc_PCR_duplicates", "perc_star_uniquely_mapped_reads", "Treatment"), collapse = "+")))
+
+runDE(meta_data = meta_data_SGBS, counts = counts_testable_any_SGBS, cell="SGBS", Pairs = Pairs_SGBS, design_formula = formula_SGBS, DE_output_dir=DE_output_dir, alpha=0.05)
+
+##### SKMC
+Pairs_SKMC=matrix(c(
+  "CNTR_G","GLUC", 
+  "CNTR1","INSU", 
+  "CNTR1","TNFa", 
+  "CNTR1","IL-6", 
+  "CNTR1","ROSI", 
+  "CNTR1","DEXA", 
+  "CNTR2","ISOP", 
+  "CNTR2","IGF1", 
+  "CNTR2","IBMX", 
+  "CNTR2","LAUR", 
+  "CNTR2","TGFB1",
+  "CNTR3","METF", 
+  "CNTR3","ATOR", 
+  "CNTR3","ADIP", 
+  "CNTR3","LEPT", 
+  "CNTR3","SB20", 
+  "CNTR3","SP60", 
+  "CNTR3","U012", 
+  "CNTR4","WORT", 
+  "CNTR4","RETA", 
+  "CNTR4","DECA"), 
+  ncol = 2, byrow = T, dimnames = list(NULL, c("Member 1", "Member 2")))
+
+formula_SKMC = formula(paste0("~ ",paste(c("RNA_concentration", "Conc_ng_per_ml" , "RNA_260_280", "RIN", "prc_gc_content_avrg_r1_r2", "perc_exon_overlap_reads", "perc_PCR_duplicates", "perc_star_uniquely_mapped_reads", "Treatment"), collapse = "+")))
+
+runDE(meta_data = meta_data_SKMC, counts = counts_testable_any_SKMC, cell="SKMC", Pairs = Pairs_SKMC, design_formula = formula_SKMC, DE_output_dir=DE_output_dir, alpha=0.05)
+```
+
+<!-- After running the above commands, summary statistics files will be saved. Read all summary statistics and change the pair labels for "Control vs Treatment" to "Treatment". Also, separate the "Control vs Treatment" for the "Control vs Control" pairs to avoid paying mupliple testing burder for the "Control vs Control" tests.  -->
+
+```{r, eval=FALSE, message=FALSE, warning=FALSE}
+# HEPG2
+
+# Read summary statistics 
+results_all_pairs_HEPG2_all = fread(input = paste0('../results/DE/DE_sum_stat_all_pairs_HEPG2.tsv'), header = T, sep = '\t', stringsAsFactors = T)
+
+# Keep only control-treatment comparisons
+results_all_pairs_HEPG2 = droplevels(results_all_pairs_HEPG2_all %>% filter(!grepl(pattern ="vs CNTR", pairs)))
+
+# Change labels
+levels(results_all_pairs_HEPG2$pairs) = sapply(X = 1:length(levels(results_all_pairs_HEPG2$pairs)), function(i) unlist(strsplit(x = levels(results_all_pairs_HEPG2$pairs)[i], split = " vs "))[2])
+
+
+# SGBS
+
+# Read summary statistics 
+results_all_pairs_SGBS_all = fread(input = paste0('../results/DE/DE_sum_stat_all_pairs_SGBS.tsv'), header = T, sep = '\t', stringsAsFactors = T)
+
+# Keeponly control-treatment comparisons
+results_all_pairs_SGBS = droplevels(results_all_pairs_SGBS_all %>% filter(!grepl(pattern ="vs CNTR", pairs)))
+
+# Change labels
+levels(results_all_pairs_SGBS$pairs) = sapply(X = 1:length(levels(results_all_pairs_SGBS$pairs)), function(i) unlist(strsplit(x = levels(results_all_pairs_SGBS$pairs)[i], split = " vs "))[2])
+
+# SKMC
+
+# Read summary statistics 
+results_all_pairs_SKMC_all = fread(input = paste0('../results/DE/DE_sum_stat_all_pairs_SKMC.tsv'), header = T, sep = '\t', stringsAsFactors = T)
+
+# Keep only control-treatment comparisons
+results_all_pairs_SKMC = droplevels(results_all_pairs_SKMC_all %>% filter(!grepl(pattern ="vs CNTR", pairs)))
+
+# Change labels
+levels(results_all_pairs_SKMC$pairs) = sapply(X = 1:length(levels(results_all_pairs_SKMC$pairs)), function(i) unlist(strsplit(x = levels(results_all_pairs_SKMC$pairs)[i], split = " vs "))[2])
+
+# Combine results from both cells
+results_all_pairs=rbindCommonCols(rbindCommonCols(
+  data.frame(results_all_pairs_HEPG2,cell="HEPG2"), 
+  data.frame(results_all_pairs_SGBS, cell="SGBS")),
+  data.frame(results_all_pairs_SKMC, cell="SKMC")
+  )
+
+
+colnames(results_all_pairs)[colnames(results_all_pairs)=="pairs"]="Treatment"
+
+```
+
+Summary statistics for each gene, treatment, and cell can be found on Google Drive file **manuscript/SUP_TAB/TabS1_DE_sumstat.xls**. Interpretation of DE results: For UNTREATED vs TREATED, if log2FoldChange > 0, then mean UNTREATED < mean TREATED and gene is up-regulated in TREATED samples.
+
+# Multiple-testing correction for DE analyses
+```{r, eval=FALSE}
+### Standard FWER control 
+# We use the Bonferroni procedure within treatments and cells ($FWER_1$), within cells and across treatments ($FWER_2$), and across cells and treatments ($FWER_3$) to control the standard family-wise error rate (FWER) at each of these levels. $FWER_3$ is the only one of these three procedures that accounts for all the tests performed. It cannot however give gene, gene-treatment, or gene-cell information (e.g. in which treatments is a gene DE) since it controls FWER at the triplet level.
+
+# Across genes, within cells, and treatments
+results_all_pairs=results_all_pairs %>% group_by(cell, Treatment) %>% mutate(BOpvalue1 = p.adjust(pvalue,method = "bonferroni")) %>% mutate(sig5FWER1 = BOpvalue1 <=.05) %>% ungroup
+# Across treatments and genes, within cells
+results_all_pairs=results_all_pairs %>% group_by(cell) %>% mutate(BOpvalue2 = p.adjust(pvalue,method = "bonferroni")) %>% mutate(sig5FWER2 = BOpvalue2 <=.05) %>% ungroup
+# Across cell, treatments, and genes
+results_all_pairs=results_all_pairs %>% mutate(BOpvalue3 = p.adjust(pvalue,method = "bonferroni")) %>% mutate(sig5FWER3 = BOpvalue3 <=.05)
+
+# The Google Drive file **results/DE/DE_sum_stat_all_treatments_cells.tsv** contains the Bonferroni-adjusted p-values for each test (columns BOpvalue1, BOpvalue2, and BOpvalue3) as well as indicator variables for each cell-treatment-gene DE status at 5% FWER (columns sig5FWER1, sig5FWER2, and sig5FWER3). 
+
+```
+
+```{r, eval=FALSE}
+### Standard FDR control 
+# We use the BH procedure within treatments and cells ($FDR_1$), within cells but across treatments ($FDR_2$), and across cells and treatments ($FDR_3$) to control the standard false discovery rate (FDR) at each of these levels. $FDR_3$is the only one of these three procedures that accounts for all the tests performed. Similar to $FWER_3$, it cannot give gene, gene-treatment, or gene-cell information since it controls FDR at the triplet level.
+
+# Across genes, within cells and treatments
+results_all_pairs=results_all_pairs %>% group_by(cell, Treatment) %>% mutate(BHpvalue1= p.adjust(pvalue,method = "BH")) %>% mutate(sig5FDR1 = BHpvalue1 <=.05) %>% ungroup
+# Across treatments and genes, within cells
+results_all_pairs=results_all_pairs %>% group_by(cell) %>% mutate(BHpvalue2 = p.adjust(pvalue,method = "BH")) %>% mutate(sig5FDR2 = BHpvalue2 <=.05) %>% ungroup
+# Across cell, treatments, and genes
+results_all_pairs=results_all_pairs %>% mutate(BHpvalue3 = p.adjust(pvalue,method = "BH")) %>% mutate(sig5FDR3 = BHpvalue3 <=.05)
+
+# The Google Drive file **results/DE/DE_sum_stat_all_treatments_cells.tsv** contains the BH-adjusted p-values for each test (columns BHpvalue1, BHpvalue2, and BHpvalue3) as well as indicator variables for each cell-treatment-gene DE status at 5% FDR (columns sig5FDR1, sig5FDR2, and sig5FDR3). 
+
+```
+
+<!-- ### Hierarchical FDR control -->
+We control the FDR across cell lines, genes, and treatments tested using the three-level hierarchical FDR testing procedures implemented in the R package treeQTL with cell lines in level 1, genes in level 2, and treatments in level 3. This (hierarchical) procedure **adjusts for all the tests performed**. In addition, it allows us to make statements about genes, gene-perturbation pairs, and gene-cell-line pairs. 
+
+<!-- This part takes a long time to run. See _MTcorrTreeQTL_per_cell_ and _MTcorrTreeQTL_ functions on how it is done. -->
+```{r, eval=FALSE}
+##### Two level FDR control
+library(TreeQTL)
+MTcorrTreeQTL_per_cell(results_all_pairs=results_all_pairs_HEPG2, cell="HEPG2", DE_output_dir=paste0(DE_output_dir,"treeQTL_2level_eAssoc/"), alpha=0.05)
+MTcorrTreeQTL_per_cell(results_all_pairs=results_all_pairs_SGBS, cell="SGBS", DE_output_dir=paste0(DE_output_dir,"treeQTL_2level_eAssoc/"), alpha=0.05)
+MTcorrTreeQTL_per_cell(results_all_pairs=results_all_pairs_SKMC, cell="SKMC", DE_output_dir=paste0(DE_output_dir,"treeQTL_2level_eAssoc/"), alpha=0.05)
+
+
+##### Three level FDR control
+library(TreeBH)
+MTcorrTreeQTL(results_all_pairs_HEPG2, results_all_pairs_SGBS, results_all_pairs_SKMC, results_all_pairs, DE_output_dir= paste0(DE_output_dir,"treeQTL_3level_eAssoc/"), alpha=0.05, prefix=NULL)
+MTcorrTreeQTL(results_all_pairs_HEPG2_CNT, results_all_pairs_SGBS_CNT, results_all_pairs_SKMC_CNT, results_all_pairs_CNT, DE_output_dir=paste0(DE_output_dir,"treeQTL_3level_eAssoc/"), alpha=0.05, prefix='_CNT')
+
+# After running the above commands, files with eAssociations p-values will be saved. Load them and add those results to the DE summary statistics results.
+
+
+# Hierarchical treeQTL within each cell line
+eAssociations_HEPG2=read.table(file = paste0('../results/DE/treeQTL_2level_eAssoc/DE_deAssociations_pval_treeQTL_FDR5_HEPG2.tsv'), sep = '\t', header = T)
+eAssociations_SGBS=read.table(file = paste0('../results/DE/treeQTL_2level_eAssoc/DE_deAssociations_pval_treeQTL_FDR5_SGBS.tsv'), sep = '\t', header = T)
+eAssociations_SKMC=read.table(file = paste0('../results/DE/treeQTL_2level_eAssoc/DE_deAssociations_pval_treeQTL_FDR5_SKMC.tsv'), sep = '\t', header = T)
+
+eAssociations=rbind(data.table(eAssociations_HEPG2, cell="HEPG2"), data.table(eAssociations_SGBS, cell="SGBS"), data.table(eAssociations_SKMC, cell="SKMC"))%>% mutate(cell_treat_gene=paste(cell, treatment, gene, sep="_"))
+results_all_pairs = results_all_pairs %>% mutate(cell_treat_gene=paste(cell, Treatment, geneID, sep="_")) %>% mutate(sig5FDR_hFDR2=cell_treat_gene %in% eAssociations$cell_treat_gene)
+
+# Hierarchical treeQTL across cell lines
+eAssociations_HEPG2=read.table(file = paste0('../results/DE/treeQTL_3level_eAssoc/DE_deAssoc_3level_by_gene_cells_HEPG2.txt'), sep = ' ', header = T)
+eAssociations_SGBS=read.table(file = paste0('../results/DE/treeQTL_3level_eAssoc/DE_deAssoc_3level_by_gene_cells_SGBS.txt'), sep = ' ', header = T)
+eAssociations_SKMC=read.table(file = paste0('../results/DE/treeQTL_3level_eAssoc/DE_deAssoc_3level_by_gene_cells_SKMC.txt'), sep = ' ', header = T)
+
+eAssociations=rbind(data.table(eAssociations_HEPG2, cell="HEPG2"), 
+                    data.table(eAssociations_SGBS, cell="SGBS"),
+                    data.table(eAssociations_SKMC, cell="SKMC")) %>% 
+  mutate(cell_treat_gene=paste(cell, SNP, gene, sep="_"))
+results_all_pairs = results_all_pairs %>% mutate(sig5FDR_hFDR3=cell_treat_gene %in% eAssociations$cell_treat_gene)
+
+results_all_pairs=results_all_pairs[,c("cell", "Treatment", "geneID", "cell_treat_gene", "baseMean", "log2FoldChange", "lfcSE",  "stat", "pvalue", "padj", "BOpvalue1","sig5FWER1","BOpvalue2","sig5FWER2","BOpvalue3" , "sig5FWER3", "BHpvalue1", "sig5FDR1", "BHpvalue2", "sig5FDR2", "BHpvalue3", "sig5FDR3", "sig5FDR_hFDR2", "sig5FDR_hFDR3")
+]
+
+write.table(x = results_all_pairs, file = '../results/DE/DE_sum_stat_all_treatments_cells.tsv', quote = F, sep = '\t', col.names = T, row.names = F, append = F)
+```
+
+The Google Drive file **manuscript/SUP_TAB/TabS1_DE_sumstat.xls** contains an indicator variable with DE status at 5% FDR for each treatment-gene pair in each cell line. 
+
+# Number of DE genes per treatment
+Using the 3-level hierarchical FDR control, with hierarchy as level 1: cells, level 2: genes, and level 3: treatment, we can get the number of DE genes per treatment and cell-lines at 5% FDR within each level. 
+
+```{r, eval=TRUE}
+results_all_pairs=fread(file = '../results/DE/DE_sum_stat_all_treatments_cells.tsv', sep = '\t', header  = T)
+results_all_pairs$cell[results_all_pairs$cell == "SKMC"] = "HMCL-7304"
+results_all_pairs$cell = factor(x = results_all_pairs$cell, levels = cell_order, labels = cell_labels)
+results_all_pairs$Treatment = factor(results_all_pairs$Treatment, levels = perturb_order)
+
+#DE specificity
+sig5FDR_MT_short_HEPG2=data.frame(reshape2::dcast(data = droplevels(results_all_pairs %>% filter(cell=="Liver") %>% ungroup())[,c("Treatment", "geneID", "sig5FDR_hFDR3")], formula = geneID ~ Treatment, value.var = "sig5FDR_hFDR3"), row.names = "geneID", check.names = F)
+
+dirDE_short_HEPG2=data.frame(reshape2::dcast(data = droplevels(results_all_pairs %>% filter(cell=="Liver") %>% ungroup())[,c("Treatment", "geneID", "stat")], formula = geneID ~ Treatment, value.var = "stat"), row.names = "geneID", check.names = F)
+
+sig5FDR_MT_short_SGBS=data.frame(reshape2::dcast(data = droplevels(results_all_pairs %>% filter(cell=="Fat") %>% ungroup())[,c("Treatment", "geneID", "sig5FDR_hFDR3")], formula = geneID ~ Treatment, value.var = "sig5FDR_hFDR3"), row.names = "geneID", check.names = F)
+
+dirDE_short_SGBS=data.frame(reshape2::dcast(data = droplevels(results_all_pairs %>% filter(cell=="Fat") %>% ungroup())[,c("Treatment", "geneID", "stat")], formula = geneID ~ Treatment, value.var = "stat"), row.names = "geneID", check.names = F)
+
+sig5FDR_MT_short_SKMC=data.frame(reshape2::dcast(data = droplevels(results_all_pairs %>% filter(cell=="Muscle") %>% ungroup())[,c("Treatment", "geneID", "sig5FDR_hFDR3")], formula = geneID ~ Treatment, value.var = "sig5FDR_hFDR3"), row.names = "geneID", check.names = F)
+
+dirDE_short_SKMC=data.frame(reshape2::dcast(data = droplevels(results_all_pairs %>% filter(cell=="Muscle") %>% ungroup())[,c("Treatment", "geneID", "stat")], formula = geneID ~ Treatment, value.var = "stat"), row.names = "geneID", check.names = F)
+
+# deGene_by_treatment and deGenes_by_cell
+deGene_by_treatment=read.table(file = '../results/DE/treeQTL_3level_eAssoc/DE_deGene_by_treatment_treeQTL_FDR5.tsv', header = T, sep = '\t', row.names = 1, check.names = F)
+deGene_by_cell=read.table(file = '../results/DE/treeQTL_3level_eAssoc/DE_deGene_by_cell_treeQTL_FDR5.tsv', header = T, sep = '\t', row.names = 1, check.names = F)
+```
+
+```{r, eval=TRUE, fig.height = 7, fig.width = 15, fig.align = "center", message=FALSE, warning=FALSE}
+nDE_per_treatment <- results_all_pairs %>% filter(sig5FDR_hFDR3) %>% dplyr::group_by(Treatment, cell) %>% dplyr::summarize(total = n()) 
+
+p_DE_per_treatment = 
+ggplot(data=nDE_per_treatment) + 
+  geom_col(aes(x = Treatment, y = total, fill = cell), position = "dodge") +
+  theme_bw()  +
+  theme(axis.title.y = element_text(size = 20, hjust = .5),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 15, angle = 90, vjust=.5, hjust = .5),
+        axis.text.x = element_text(size = 15, colour = "black", angle=90, vjust=.5, hjust = 1),
+        plot.margin = unit(c(5.5, 5.5, 5.5, 20), "points"),
+        legend.position = c(.5,.9),
+        legend.direction = "horizontal",
+        legend.background = element_blank(),
+        legend.text = element_text(size = 30),
+        strip.text = element_text(size=30))  + 
+  ylab("Nr of DE genes")  +
+  guides(fill=guide_legend(title = "")) +
+  scale_fill_manual(values = cell_col) 
+
+p_DE_per_treatment 
+
+```
+
+<!-- Supplemental Tables -->
+```{r, eval=FALSE, fig.height = 4, fig.width = 15, fig.align = "center"}
+# DE summary statistics
+GeneNamesMap=read.csv(file = '../data/RNASeq/GeneNamesMap.csv', header = T,row.names = 1)
+for(i in 1:length(cell_labels)){
+  for(j in 1:length(perturb_order)){
+    mat=results_all_pairs %>% filter(cell==cell_labels[i]&Treatment==perturb_order[j])%>% mutate(ensembl_id=GeneNamesMap[geneID,"ensembl_gene_id"]) %>% select(cell,Treatment,ensembl_id,geneID,baseMean,log2FoldChange,lfcSE,stat,pvalue,sig5FDR_hFDR3) 
+    colnames(mat)=c("Cell","Pertubration","ensembl_id","hgnc_id","baseMean","log2FoldChange","lfcSE","test_stat","p-value","significant_5prcFDR")
+    
+    WriteXLS::WriteXLS(x = mat, ExcelFileName = paste0("~/Box Sync/IR-GxE/manuscript/Tables/TabS01_DE_sumstat/TabS01_DE_sumstat_",paste(cell_labels[i],perturb_order[j], sep = "_"),".xls"), SheetNames = paste(cell_labels[i],perturb_order[j], sep = "_"), row.names = F, col.names = T, AdjWidth = T, BoldHeaderRow = TRUE, FreezeRow = 1)
+  }}
+
+#DE specificity
+write.csv(x = data.frame(sig5FDR_MT_short_HEPG2*sign(dirDE_short_HEPG2)), file = '~/Box Sync/IR-GxE/manuscript/Tables/TabS02_DE_specificity_Liver.csv', row.names = T, quote = F)
+
+write.csv(x = data.frame(sig5FDR_MT_short_SGBS*sign(dirDE_short_SGBS)), file = '~/Box Sync/IR-GxE/manuscript/Tables/TabS2_DE_specificity_Fat.csv', row.names = T, quote = F)
+
+write.csv(x = data.frame(sig5FDR_MT_short_SKMC*sign(dirDE_short_SKMC)), file = '~/Box Sync/IR-GxE/manuscript/Tables/TabS2_DE_specificity_Muscle.csv', row.names = T, quote = F)
+
+# deGene_by_treatment and deGenes_by_cell
+WriteXLS::WriteXLS(x = deGene_by_treatment, ExcelFileName = '~/Box Sync/IR-GxE/manuscript/Tables/TabS03_deGene_by_treatment_treeQTL_FDR5.xls', row.names = T, col.names = T, BoldHeaderRow = T, FreezeRow = 1, FreezeCol = 1)
+
+WriteXLS::WriteXLS(x = deGene_by_cell, ExcelFileName = '~/Box Sync/IR-GxE/manuscript/Tables/TabS03_deGene_by_cell_treeQTL_FDR5.xls', row.names = T, col.names = T, BoldHeaderRow = T, FreezeRow = 1, FreezeCol = 1)
+
+
+```
+
+```{r, eval=FALSE, fig.height = 4, fig.width = 15, fig.align = "center"}
+# In addition, we can get the number of DE genes per treatment across cell-lines. A gene is considered DE for a treatment if it is DE in at least on of the three cell lines. This information is not that helpful
+n_deGene_by_treatment=data.table(as.matrix(apply(deGene_by_treatment,2,sum)), keep.rownames = T)
+
+p_DE_per_treatment=ggplot(data=n_deGene_by_treatment, aes(x = rn, y = V1)) + geom_col(aes()) + geom_text(aes(label = V1), size=5, vjust=-.5, fontface='bold') + theme_bw()  + theme(axis.title.y = element_text(size = 20, hjust = .5), axis.text.y = element_text(size = 15), axis.text.x = element_text(size = 20, colour = "black", angle=90, vjust=.5), plot.margin = unit(c(5.5, 5.5, 5.5, 20), "points"), legend.position = c(.9,.95), legend.background = element_blank(), strip.text.x = element_text(size = 20), legend.text = element_text(size = 15))  + ylab("Nr of genes DE in >= 1 cell line")  + xlab(label = "")  + coord_cartesian(ylim = c(0,max(n_deGene_by_treatment$V1) + 200))
+
+# p_DE_per_treatment
+
+```
+
+### Number of treatments in which each genes is DE
+Using the 3-level hierarchical FDR control, with hierarchy as level 1: cells, level 2: genes, and level 3: treatment, we can get the number of treatments in which each genes is DE for each cell line. The Google Drive file **manuscript/SUP_TAB/TabS2_DE_specificity.xls** contains for each gene, the number of treatments in which it is DE in each cell line. 
+
+```{r, eval=TRUE, fig.height = 7, fig.width = 15, fig.align = "center"}
+total_cond_per_gene_3level <- results_all_pairs %>% 
+  filter(sig5FDR_hFDR3) %>% 
+  dplyr::group_by(geneID, cell) %>% 
+  dplyr::summarize(nr_treatments = n())  %>% 
+  dplyr::group_by(cell, nr_treatments) %>% 
+  dplyr::summarize(nr_genes = length(geneID)) %>% 
+  mutate(nr_treatments_rec = ifelse(test = nr_treatments < 10, yes = nr_treatments, no = 10))
+
+p_nr_treatment_per_DE_gene=ggplot(data = total_cond_per_gene_3level, mapping = aes(x = nr_treatments_rec, y = nr_genes, fill=cell)) +
+  geom_col(position="dodge") +
+  theme_bw()  +
+  ylab("Nr of DE genes")  +
+  xlab(label = "Nr of perturbations") +
+  theme(axis.title.y = element_text(size = 20, hjust = .5),
+        axis.title.x = element_text(size = 20),
+        axis.text.y = element_text(size = 15, angle = 90, vjust=.5, hjust = .5),
+        axis.text.x = element_text(size = 20, colour = "black"),
+        plot.margin = unit(c(5.5, 5.5, 5.5, 20), "points"),
+        legend.position = "none",
+        legend.background = element_blank(),
+        legend.text = element_text(size = 15)) +
+  scale_fill_manual(values = cell_col) +
+  guides(fill=guide_legend(title = "")) +
+  scale_x_continuous(breaks = seq(1,10,1), labels = c(1:9,">=10"))
+
+p_nr_treatment_per_DE_gene
+
+
+```
+
+We observe that several genes show highly shared DE signal across perturbations; 399, 343, and 203 genes are DE in more than 10 perturbations in muscle, fat and liver cells, respectively. 
+
+```{r, eval=TRUE}
+kableExtra::kable(x = total_cond_per_gene_3level %>% filter(nr_treatments_rec==10) %>% group_by(cell) %>% summarise(Nr_Genes_DE_geq10_Perturb=sum(nr_genes)), row.names = F, format = "markdown")
+```
+
+```{r, eval=TRUE}
+Genes_DE_geq10_Perturb_SKMC=rownames(sig5FDR_MT_short_SKMC[rowSums(sig5FDR_MT_short_SKMC)>=10,])
+Genes_DE_geq10_Perturb_SGBS=rownames(sig5FDR_MT_short_SGBS[rowSums(sig5FDR_MT_short_SGBS)>=10,])
+Genes_DE_geq10_Perturb_HEPG2=rownames(sig5FDR_MT_short_HEPG2[rowSums(sig5FDR_MT_short_HEPG2)>=10,])
+```
+
+For example, ERRFI1 and PEG10 in muscle, PDLIM4 in fat, and ARID5B and BHLHE40 in Liver are differentially expressed in 16 perturbations. In addition `r intersect(intersect(Genes_DE_geq10_Perturb_SKMC,Genes_DE_geq10_Perturb_SGBS), Genes_DE_geq10_Perturb_HEPG2)` are DE in at least 10 perturbations in all three cell types.  
+
+# Treatment-specific DE genes 
+Using the 3-level hierarchical FDR control, with hierarchy as level 1: cells, level 2: genes, and level 3: treatment, we can get the number of treatment-specific DE genes for each treatment in each cell line at 5% FDR (numbers on top of barplot below). The percent of treatment-specific DE genes for each treatment in each cell line, plotted below, is calculated as $\forall i = 1, \ldots, 21: \frac {\text{Number of treatment-specific DE genes for treatment i}} {\text{Total number of DE genes for treatment i}}$. 
+
+```{r, eval=TRUE, fig.height = 7, fig.width = 15, fig.align = "center", echo=FALSE}
+cond_spec_genes_per_cond_HEPG2 <- melt(data.table(sig5FDR_MT_short_HEPG2[rowSums(sig5FDR_MT_short_HEPG2)==1,], keep.rownames = T ), id.vars = "rn") %>% filter(value) %>% dplyr::group_by(variable) %>% dplyr::summarize(treat_spec = length(rn)) %>% mutate(cell="Liver") %>% mutate(treat_cell=paste(variable, cell, sep = '_'))
+
+cond_spec_genes_per_cond_SGBS <- melt(data.table(sig5FDR_MT_short_SGBS[rowSums(sig5FDR_MT_short_SGBS)==1,], keep.rownames = T ), id.vars = "rn") %>% filter(value) %>% dplyr::group_by(variable) %>% dplyr::summarize(treat_spec = length(rn)) %>% mutate(cell="Fat") %>% mutate(treat_cell=paste(variable, cell, sep = '_'))
+
+cond_spec_genes_per_cond_SKMC <- melt(data.table(sig5FDR_MT_short_SKMC[rowSums(sig5FDR_MT_short_SKMC)==1,], keep.rownames = T ), id.vars = "rn") %>% filter(value) %>% dplyr::group_by(variable) %>% dplyr::summarize(treat_spec = length(rn)) %>% mutate(cell="Muscle")%>% mutate(treat_cell=paste(variable, cell, sep = '_'))
+
+cond_spec_genes_per_cond_cell = rbind(cond_spec_genes_per_cond_HEPG2, cond_spec_genes_per_cond_SGBS, cond_spec_genes_per_cond_SKMC)
+
+colnames(cond_spec_genes_per_cond_cell)[1]="Treatment"
+
+cond_spec_genes_per_cond_cell = merge(y = cond_spec_genes_per_cond_cell %>% dplyr::select(treat_cell,treat_spec),
+                                           x= nDE_per_treatment %>% mutate(treat_cell=paste(Treatment,cell, sep = '_')) %>% dplyr::select(Treatment,cell,treat_cell,total), 
+                                           by="treat_cell", all= T) %>% 
+  dplyr::select(Treatment,cell,treat_spec,total) 
+
+cond_spec_genes_per_cond_cell$treat_spec[is.na(cond_spec_genes_per_cond_cell$treat_spec)]=0
+
+p_nr_treatment_specific_DE_genes = ggplot(data = cond_spec_genes_per_cond_cell,
+       mapping = aes(x = factor(Treatment, levels = perturb_order), y = treat_spec/total, fill=cell)) +
+  geom_col(position="dodge") +
+  theme_bw()  +
+  ylab("% Specific DE genes") +
+  theme(axis.title.y = element_text(size = 20, hjust = .5),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 15),
+        axis.text.x = element_text(size = 15, colour = "black", angle=90, vjust=.5),
+        plot.margin = unit(c(5.5, 5.5, 5.5, 20), "points"),
+        legend.position = "none",
+        legend.background = element_blank(),
+        legend.text = element_text(size = 15)) +
+  coord_cartesian(ylim = c(0,.35)) +
+  scale_fill_manual(values = cell_col) +
+  guides(fill=guide_legend(title = ""))
+
+Figure=ggdraw() +
+  draw_plot(plot = p_DE_per_treatment, x = .02, y = .66, width = .98, height = .33) +
+  draw_plot(plot = p_nr_treatment_per_DE_gene, x = .02, y = .33, width = .98, height = .33) +
+  draw_plot(plot = p_nr_treatment_specific_DE_genes, x =.02, y = 00, width = .98, height = .33) +
+  draw_plot_label(label = c('A','B','C'),  x = c(0,0,0), y = c(1,.66,.35), size = 30)
+ggsave(filename = '~/Box Sync/IR-GxE/manuscript/Figures/Fig1ABC_DEsumm.pdf', plot = Figure, width = 15, height = 10)
+
+p_nr_treatment_specific_DE_genes
+```
+
+The file **manuscript/SUP_TAB/TabS2_DE_specificity.xls** contains an indicator variable with DE status at 5% FDR for each treatment-gene pair in each cell line. Treatment-specific genes will have a 1 for the number of treatments in which they are DE and a TRUE value for the treatment to which they are specific.
+
+# Treatment-and-cell-type-specific DE genes 
+
+```{r, eval=TRUE, fig.height = 7, fig.width = 15, fig.align = "center", echo=FALSE}
+treat_and_cell_spec_HEPG2=sig5FDR_MT_short_HEPG2[rowSums(sig5FDR_MT_short_HEPG2) == 1 & 
+                                          rowSums(sig5FDR_MT_short_SGBS[rownames(sig5FDR_MT_short_HEPG2),])==0 &
+                                          (!is.na(rowSums(sig5FDR_MT_short_SGBS[rownames(sig5FDR_MT_short_HEPG2),]))) &
+                                          rowSums(sig5FDR_MT_short_SKMC[rownames(sig5FDR_MT_short_HEPG2),])==0 &
+                                          (!is.na(rowSums(sig5FDR_MT_short_SKMC[rownames(sig5FDR_MT_short_HEPG2),]))),]
+
+treat_and_cell_spec_SGBS=sig5FDR_MT_short_SGBS[rowSums(sig5FDR_MT_short_SGBS) == 1 & 
+                                        rowSums(sig5FDR_MT_short_HEPG2[rownames(sig5FDR_MT_short_SGBS),])==0 &
+                                        (!is.na(rowSums(sig5FDR_MT_short_HEPG2[rownames(sig5FDR_MT_short_SGBS),])==0)) &
+                                        rowSums(sig5FDR_MT_short_SKMC[rownames(sig5FDR_MT_short_SGBS),])==0 &
+                                        (!is.na(rowSums(sig5FDR_MT_short_SKMC[rownames(sig5FDR_MT_short_SGBS),])==0)),]
+
+treat_and_cell_spec_SKMC=sig5FDR_MT_short_SKMC[ rowSums(sig5FDR_MT_short_SKMC) == 1 & 
+                                         rowSums(sig5FDR_MT_short_HEPG2[rownames(sig5FDR_MT_short_SKMC),])==0 &
+                                         (!is.na(rowSums(sig5FDR_MT_short_HEPG2[rownames(sig5FDR_MT_short_SKMC),])==0)) &
+                                         rowSums(sig5FDR_MT_short_SGBS[rownames(sig5FDR_MT_short_SKMC),])==0 &
+                                         (!is.na(rowSums(sig5FDR_MT_short_SGBS[rownames(sig5FDR_MT_short_SKMC),])==0)) ,]
+
+
+cond_cell_spec_genes_HEPG2 <- melt(data.table(treat_and_cell_spec_HEPG2, keep.rownames = T ), id.vars = "rn") %>% filter(value) %>% dplyr::group_by(variable) %>% dplyr::summarize(treat_cell_spec = length(rn)) %>% mutate(cell="Liver") %>% mutate(treat_cell=paste(variable, cell, sep = '_'))
+
+cond_cell_spec_genes_SGBS <- melt(data.table(treat_and_cell_spec_SGBS, keep.rownames = T ), id.vars = "rn") %>% filter(value) %>% dplyr::group_by(variable) %>% dplyr::summarize(treat_cell_spec = length(rn)) %>% mutate(cell="Fat") %>% mutate(treat_cell=paste(variable, cell, sep = '_'))
+
+cond_cell_spec_genes_SKMC <- melt(data.table(treat_and_cell_spec_SKMC, keep.rownames = T ), id.vars = "rn") %>% filter(value) %>% dplyr::group_by(variable) %>% dplyr::summarize(treat_cell_spec = length(rn)) %>% mutate(cell="Muscle")%>% mutate(treat_cell=paste(variable, cell, sep = '_'))
+
+cond_cell_spec_genes = rbind(cond_cell_spec_genes_HEPG2, cond_cell_spec_genes_SGBS, cond_cell_spec_genes_SKMC)
+colnames(cond_cell_spec_genes)[1]="Treatment"
+
+cond_spec_and_cond_cell_spec_genes=merge(x = cond_spec_genes_per_cond_cell, y = cond_cell_spec_genes, by = c("cell","Treatment"), all = T)
+cond_spec_and_cond_cell_spec_genes$treat_cell_spec[is.na(cond_spec_and_cond_cell_spec_genes$treat_cell_spec)]=0
+
+cond_spec_and_cond_cell_spec_genes=cond_spec_and_cond_cell_spec_genes %>% mutate(prc_treat_spec=round(100*treat_spec/total,1)) %>% mutate(prc_treat_and_cell_spec=round(100*treat_cell_spec/total,1))
+
+
+p_nr_treatment_cell_specific_DE_genes=ggplot(data = cond_spec_and_cond_cell_spec_genes , mapping = aes(x = factor(Treatment, levels = perturb_order), y = prc_treat_and_cell_spec, fill=cell)) +
+  geom_col(position="dodge") +
+  theme_bw()  +
+  theme(axis.title.y = element_text(size = 20, hjust = .5),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 15, angle = 90, vjust=.5, hjust = .5),
+        axis.text.x = element_text(size = 15, colour = "black", angle=90, vjust=.5, hjust = 1),
+        plot.margin = unit(c(5.5, 5.5, 5.5, 20), "points"),
+        legend.position = "none",
+        legend.background = element_blank(),
+        legend.text = element_text(size = 20),
+        strip.text = element_text(size=20))  + 
+  ylab("% Perturbation-and-cell-specific\nDE genes")  +
+  guides(fill=guide_legend(title = "")) +
+  scale_fill_manual(values = cell_col) 
+
+p_nr_treatment_cell_specific_DE_genes
+
+Figure=ggdraw() +
+  draw_plot(plot = p_DE_per_treatment + theme(axis.text.y = element_text(size=15, angle=0)), x = .027, y = .5, width = .973, height = .5) +
+  draw_plot(plot = p_nr_treatment_cell_specific_DE_genes, x = .02, y = 0, width = .98, height = .5) +
+  draw_plot_label(label = c('A','B'),  x = c(0,0), y = c(1,.52), size = 30)
+ggsave(filename = '~/Box Sync/IR-GxE/manuscript/Figures/FigS04_PertSpecGenes.pdf', plot = Figure, width = 15, height = 7.5)
+
+
+```
+
+TGFB1 in fat and glucose in liver cells provided the largest amount of perturbation-and-cell-specific DE genes; 11.6% and 10.7% of genes affected by TGFB1 in fat and glucose in liver are not altered by any of the other 20 perturbation in any of the other two cell types. 
+```{r, eval=TRUE}
+kableExtra::kable(x = head(cond_spec_and_cond_cell_spec_genes[order(cond_spec_and_cond_cell_spec_genes$prc_treat_spec, decreasing = T),], n = 5), format = "markdown", row.names = FALSE)
+```
+
+# Hierarchical clustering and correlation of treatments 
+We performed hierarchical clustering and correlation of treatments based on test statistic of genes DE in at least one perturbation in each cell line. 
+
+```{r, eval=TRUE, message=F, warning=F, fig.height = 3, fig.width = 9}
+C=1 # How many conditions needs a gene to be DE in to be included
+G=1 # How many DE genes a condition needs to be included
+genesDEgeqCconditions_HEPG2=apply(sig5FDR_MT_short_HEPG2,1,sum)>=C
+conditions_geqG_DEgenes_HEPG2=names(which(apply(sig5FDR_MT_short_HEPG2,2,sum)>=G))
+
+genesDEgeqCconditions_SGBS=apply(sig5FDR_MT_short_SGBS,1,sum)>=C
+conditions_geqG_DEgenes_SGBS=names(which(apply(sig5FDR_MT_short_SGBS,2,sum)>=G))
+
+genesDEgeqCconditions_SKMC=apply(sig5FDR_MT_short_SKMC,1,sum)>=C
+conditions_geqG_DEgenes_SKMC=names(which(apply(sig5FDR_MT_short_SKMC,2,sum)>=G))
+
+# SGBS
+mat_DEstatus_SGBS=t((sig5FDR_MT_short_SGBS*1*sign(dirDE_short_SGBS))[genesDEgeqCconditions_SGBS, conditions_geqG_DEgenes_SGBS])
+mat_TestStat_SGBS=t(dirDE_short_SGBS[genesDEgeqCconditions_SGBS, conditions_geqG_DEgenes_SGBS])
+
+# SKMC
+mat_DEstatus_SKMC=t((sig5FDR_MT_short_SKMC*1*sign(dirDE_short_SKMC))[genesDEgeqCconditions_SKMC, conditions_geqG_DEgenes_SKMC])
+mat_TestStat_SKMC=t(dirDE_short_SKMC[genesDEgeqCconditions_SKMC, conditions_geqG_DEgenes_SKMC])
+
+#HepG2
+mat_DEstatus_HEPG2=t((sig5FDR_MT_short_HEPG2*1*sign(dirDE_short_HEPG2))[genesDEgeqCconditions_HEPG2, conditions_geqG_DEgenes_HEPG2])
+mat_TestStat_HEPG2=t(dirDE_short_HEPG2[genesDEgeqCconditions_HEPG2, conditions_geqG_DEgenes_HEPG2])
+
+### Plots
+# pdf(file = '~/Box Sync/IR-GxE/manuscript/Figures/Fig1C_PerturbCor.pdf', width = 9, height = 3)
+par(mfrow=c(1,3))
+cor_SKMC_tstat=corrplot(corr = cor(t(mat_TestStat_SKMC),use='pairwise',method = 'spearman'), type = "upper", order = "hclust", tl.col = 'black', tl.srt = 90, col = colorRampPalette(c("darkblue", "white", "darkred"))(20), title = "Muscle",mar=c(0,0,1,0))
+cor_SGBS_tstat=corrplot(corr = cor(t(mat_TestStat_SGBS),use='pairwise',method = 'spearman'), type = "upper", order = "hclust", tl.col = 'black', tl.srt = 90, col = colorRampPalette(c("darkblue", "white", "darkred"))(20), title = "Fat",mar=c(0,0,1,0))
+cor_HEPG2_tstat=corrplot(corr = cor(t(mat_TestStat_HEPG2),use='pairwise',method = 'spearman'), type = "upper", order = "hclust", tl.col = 'black', tl.srt = 90, col = colorRampPalette(c("darkblue", "white", "darkred"))(20), title = "Liver",mar=c(0,0,1,0))
+# dev.off()
+```
+
+# Intersecting DE patterns and commenting on interesting and unexpected patterns. 
+```{r, eval=FALSE}
+# INS vs GLUC
+# INS vs IGF-1 
+# INS vs TNFa 
+library(gridExtra)
+library(grid)
+
+Pert1="INSU"
+# Pert2="GLUC"
+# Pert2="IGF1"
+Pert2="TNFa"
+# cell="_Liver"
+sig5FDR_MT_short=sig5FDR_MT_short_SKMC
+dirDE_short=dirDE_short_SKMC
+mat_DEstatus_Pert1_vs_Pert2=(sig5FDR_MT_short*1*sign(dirDE_short))[rowSums(sig5FDR_MT_short[,c(Pert1, Pert2)])>0,c(Pert1, Pert2)] 
+mat_DEstatus_Pert1_vs_Pert2$BothDE=rowSums(abs(mat_DEstatus_Pert1_vs_Pert2))==2
+mat_DEstatus_Pert1_vs_Pert2$Agree=mat_DEstatus_Pert1_vs_Pert2[,Pert1]==mat_DEstatus_Pert1_vs_Pert2[,Pert2]
+# WriteXLS::WriteXLS(x = mat_DEstatus_Pert1_vs_Pert2, ExcelFileName = 
+                     # paste0("~/Box Sync/IR-GxE/manuscript/Tables/TabS07_DE_IntersectingPerturbations/TabS07_DE_IntersectingPerturbations_",Pert1,"vs",Pert2,cell,".xls"), SheetNames = paste0(Pert1,"_vs_",Pert2), row.names = T, col.names = T, AdjWidth = T, BoldHeaderRow = T, FreezeCol = 1)
+
+# How many are DE in at least one perturbation
+nrow(mat_DEstatus_Pert1_vs_Pert2)
+# How many are DE only in insulin
+sum((mat_DEstatus_Pert1_vs_Pert2$INSU!=0)&(mat_DEstatus_Pert1_vs_Pert2[,2]==0))
+# How many are DE only in perturbation
+sum((mat_DEstatus_Pert1_vs_Pert2$INSU==0)&(mat_DEstatus_Pert1_vs_Pert2[,2]!=0))
+# How many are DE in both and in the same direction
+sum(mat_DEstatus_Pert1_vs_Pert2$Agree)
+# How many are DE in both and in the opposite direction
+sum((!mat_DEstatus_Pert1_vs_Pert2$Agree) & mat_DEstatus_Pert1_vs_Pert2$BothDE)
+
+tab_Pert1_vs_Pert2=as.matrix(table(mat_DEstatus_Pert1_vs_Pert2[,1:2]))
+tab_Pert1_vs_Pert2=cbind(tab_Pert1_vs_Pert2,Total=rowSums(tab_Pert1_vs_Pert2))
+tab_Pert1_vs_Pert2=rbind(tab_Pert1_vs_Pert2, Total=colSums(tab_Pert1_vs_Pert2))
+colnames(tab_Pert1_vs_Pert2) = c(paste0("Down Reg ",Pert2),paste0("Not DE ",Pert2),paste0("Up Reg ",Pert2),"Total")
+rownames(tab_Pert1_vs_Pert2) = c(paste0("Down Reg ",Pert1),paste0("Not DE ",Pert1),paste0("Up Reg ",Pert1),"Total")
+
+```
+<!-- ### Why do IL-6, ROSI, TNFa, and DEXA cluster together for SGBS? -->
+
+
+<!-- # Combine with TWAS -->
+```{r, eval=FALSE}
+library(exact2x2)
+
+### Effect of treatments on IR-related traits
+
+# Tissue Pairs I am interested to test
+pairs=data.frame(rbind(c(GTEx="GTEx.Liver", IR="HepG2"),
+                       c(GTEx="GTEx.Adipose_Subcutaneous", IR="SGBS"),
+                       c(GTEx="GTEx.Adipose_Visceral_Omentum", IR="SGBS"),
+                      c(GTEx="GTEx.Muscle_Skeletal", IR="HMCL-7304")), stringsAsFactors = F)
+
+
+TWAS_files=list.files(path = '../data/TWAS/', pattern = '.dat')
+
+TRS = NULL
+for(i in 1:length(TWAS_files)){
+  # TWAS summary statistics for trait i
+  TWAS_Trait=fread(file = paste0('../data/TWAS/',TWAS_files[i]), header = T, sep = '\t')
+  
+  for(j in 1:nrow(pairs)){
+    # TWAS summary statistics for GTEx tissue j
+    Trait_GTExTissue=TWAS_Trait %>% filter(PANEL==pairs[j,1]) %>% select(PANEL, ID, CHR, TWAS.Z, TWAS.P)
+    Trait_GTExTissue=Trait_GTExTissue[!apply(is.na(Trait_GTExTissue),1,any),]
+    Trait_GTExTissue = Trait_GTExTissue[Trait_GTExTissue$TWAS.P <= .1, ]
+    
+    # TWAS & DE summary statistics for IR cell type j, GTEx tissue j, and trait i
+    Trait_GTExTissue_IRTissue=droplevels(results_all_pairs %>% filter(cell==pairs[j,2]) %>% filter(geneID %in% Trait_GTExTissue$ID))
+    Trait_GTExTissue_IRTissue=merge(x = Trait_GTExTissue_IRTissue, y = Trait_GTExTissue, by.x="geneID", by.y="ID")
+    
+    treatments_ij=unique(Trait_GTExTissue_IRTissue$Treatment)
+    
+    TRS_Trait_GTExTissue_IRTissue=data.frame(t(sapply(X = 1:length(treatments_ij), FUN = function(k){
+      
+      Trait_GTExTissue_IRTissue_k=Trait_GTExTissue_IRTissue %>% filter(Treatment==treatments_ij[k]) 
+      
+      fisher_test_k=fisher.exact(x = sign(Trait_GTExTissue_IRTissue_k$log2FoldChange),  y = sign(Trait_GTExTissue_IRTissue_k$TWAS.Z), or = 1, conf.int = TRUE)
+      
+      return(c(fisher_test_k$estimate, fisher_test_k$conf.int[1:2], p.value=fisher_test_k$p.value))
+      
+    })), stringsAsFactors = F)
+    
+    colnames(TRS_Trait_GTExTissue_IRTissue)[2:3]=c("LB","UB")
+    
+    TRS_Trait_GTExTissue_IRTissue$Treatment = unique(Trait_GTExTissue_IRTissue$Treatment)
+    TRS_Trait_GTExTissue_IRTissue$Trait =  TWAS_files[i]
+    TRS_Trait_GTExTissue_IRTissue$GTEx_Tissue =  pairs[j,1]
+    TRS_Trait_GTExTissue_IRTissue$IR_Tissue =  pairs[j,2]
+    
+    TRS=rbind(TRS,TRS_Trait_GTExTissue_IRTissue)
+  }
+}
+
+TRS$BHp = p.adjust(p = TRS$p.value, method = "BH")
+
+TRS = TRS[order(TRS$p.value),c("Trait",  "GTEx_Tissue", "IR_Tissue", "Treatment", "odds.ratio", "LB", "UB", "p.value", "BHp")]
+
+x=TRS[TRS$p.value<=.05,]
+x$odds.ratio = format(x$odds.ratio, digits = 2)
+x$LB = format(x$LB, digits = 2)
+x$UB = format(x$UB, digits = 2)
+x$p.value = format(x$p.value, digits = 2, scientific = T)
+
+write.table(x = x, file = '~/Desktop/file.txt', append = F, quote = F, sep = ' & ', row.names = F, col.names = T)
+
+```
