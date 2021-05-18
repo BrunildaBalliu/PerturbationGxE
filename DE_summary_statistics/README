@@ -1,0 +1,10 @@
+Summary statistics from differential expression by perturbation analyses. 
+DE-by-perturbation analyses were performed using the negative binomial models implemented in the R package DESeq2. 
+Multiple testing adjustment was controlled using the hierarchical FDR (hFDR) procedures implemented in the R package TreeQTL. 
+One file per cell line is provided. 
+Each file has the following columns: 
+Cell, Pertubration	: cell and perturbation 
+ensembl_id, hgnc_id	: ensemble and hugo gene names
+baseMean : mean expression for control 1 (used as reference category) from DESeq2
+log2FoldChange, lfcSE	test_stat	p-value	: log2 fold change, standard errors, test statistic and p-value for perturbation and it's matched control from DESeq2
+significant_5prcFDR: binary variable indicating if a gene is significantly DE by the Pertubration in the specific Cell at 5% hFDR from TreeQTL
